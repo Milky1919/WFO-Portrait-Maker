@@ -83,9 +83,9 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         
         # 3. If not found, ask user to select Executable
         if not target_exe_path:
-            messagebox.showinfo("Setup", "Wizardry The Five Ordeals installation not found.\nPlease select the game executable (WizardryFoV2.exe).")
+            messagebox.showinfo(loc.get("setup.title"), loc.get("setup.game_not_found"))
             target_exe_path = filedialog.askopenfilename(
-                title="Select WizardryFoV2.exe",
+                title=loc.get("setup.select_exe_title"),
                 filetypes=[("Executable", "*.exe")]
             )
             
@@ -98,9 +98,54 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         
         # 5. Validate 'face' directory
         if not os.path.exists(face_dir):
-            # Show error as requested
-            messagebox.showerror("Error", f"Face directory not found at expected location:\n{face_dir}\n\nPlease ensure the game is installed correctly and you have launched it at least once.")
-            return None
+            # Show custom setup dialog
+            from gui.dialogs.setup_dialog import FaceDirErrorDialog
+            
+            # We need a way to wait for the dialog result.
+            # Since we are in __init__, we can't easily use wait_window if mainloop hasn't started?
+            # Actually, we are in __init__ of App, but mainloop is called after.
+            # We can create a temporary root or use the App window (which is created but not shown fully?).
+            # App inherits CTk, so it is a root.
+            
+            self.setup_action = None
+            
+            def on_retry():
+                self.setup_action = "retry"
+                dlg.destroy()
+                
+            def on_create():
+                self.setup_action = "create"
+                dlg.destroy()
+                
+            def on_exit():
+                self.setup_action = "exit"
+                dlg.destroy()
+                
+            def on_lang_change(lang):
+                self.change_language(lang)
+
+            while True:
+                dlg = FaceDirErrorDialog(self, target_exe_path, face_dir, on_retry, on_create, on_exit, on_lang_change)
+                self.wait_window(dlg)
+                
+                if self.setup_action == "retry":
+                    # Check again
+                    if os.path.exists(face_dir):
+                        break
+                    else:
+                        continue # Show dialog again
+                elif self.setup_action == "create":
+                    try:
+                        os.makedirs(face_dir)
+                        from core.logger import Logger
+                        Logger.info(f"Created face directory: {face_dir}")
+                        break
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to create directory: {e}")
+                        return None
+                else:
+                    # Exit or closed
+                    return None
             
         # Success
         self.config["last_open_path"] = face_dir
@@ -137,7 +182,8 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.lbl_lang.pack(side="right", padx=5)
         
         current_lang = self.config.get("language", "JP")
-        self.combo_lang = ctk.CTkComboBox(self.footer_frame, values=["JP", "EN"], width=70, command=self.change_language)
+        available_langs = loc.get_available_languages()
+        self.combo_lang = ctk.CTkComboBox(self.footer_frame, values=available_langs, width=70, command=self.change_language)
         self.combo_lang.set(current_lang)
         self.combo_lang.pack(side="right", padx=5)
 
@@ -153,11 +199,14 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.bind("<Control-z>", self.undo_action)
 
     def undo_action(self, event=None):
-        if self.face_manager.undo():
+        restored_data = self.face_manager.undo()
+        if restored_data:
             self.character_list.refresh()
-            # If editor was empty, maybe clear it or leave it?
-            # If we restored a character, it won't be auto-selected unless we find it.
-            # But refresh is good enough for now.
+            # If the restored data matches the currently edited face, reload it
+            if self.editor_panel.current_face and self.editor_panel.current_face.get('_path') == restored_data.get('_path'):
+                self.editor_panel.load_character(restored_data)
+            elif isinstance(restored_data, bool) and restored_data: # Handle legacy boolean return if any
+                 self.character_list.refresh()
 
     def append_log(self, message):
         self.log_textbox.configure(state="normal")
@@ -192,11 +241,16 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         
         # Refresh UI
         # Destroy current frames and re-init
-        self.character_list.destroy()
-        self.editor_panel.destroy()
-        self.footer_frame.destroy()
-        
-        self.init_ui()
+        if hasattr(self, 'character_list') and self.character_list:
+            self.character_list.destroy()
+        if hasattr(self, 'editor_panel') and self.editor_panel:
+            self.editor_panel.destroy()
+        if hasattr(self, 'footer_frame') and self.footer_frame:
+            self.footer_frame.destroy()
+            
+        # Only re-init if we have a valid face manager (meaning environment is valid)
+        if hasattr(self, 'face_manager') and self.face_manager:
+            self.init_ui()
 
     def save_config(self):
         import json

@@ -27,12 +27,22 @@ class ImageProcessor:
                     return None
             return self._rembg_session
 
-    def remove_background(self, image: Image.Image) -> Image.Image:
+    def remove_background(self, image: Image.Image, params: Dict = None) -> Image.Image:
         """Removes background from the image using rembg."""
         session = self._get_session()
         if session:
             import rembg
-            return rembg.remove(image, session=session)
+            
+            # Default params
+            kwargs = {}
+            if params:
+                if params.get('alpha_matting', False):
+                    kwargs['alpha_matting'] = True
+                    kwargs['alpha_matting_foreground_threshold'] = int(params.get('alpha_matting_foreground_threshold', 240))
+                    kwargs['alpha_matting_background_threshold'] = int(params.get('alpha_matting_background_threshold', 10))
+                    kwargs['alpha_matting_erode_size'] = int(params.get('alpha_matting_erode_size', 10))
+            
+            return rembg.remove(image, session=session, **kwargs)
         return image
 
     def remove_background_async(self, image: Image.Image, callback):
@@ -42,33 +52,50 @@ class ImageProcessor:
             callback(result)
         self._executor.submit(task)
 
-    def process_image(self, 
-                      source_path: str, 
-                      params: Dict, 
-                      target_size: Tuple[int, int] = (1920, 1080),
-                      frame_path: Optional[str] = None) -> Optional[Image.Image]:
+    def preprocess_image(self, source_path: str, params: Dict) -> Optional[Image.Image]:
         """
-        Processes an image with the given parameters and optional frame.
+        Loads and applies background removal (if needed). Returns the base image for further transforms.
         """
-        if not source_path:
-            return None
-
+        if not source_path: return None
+        
         try:
             img = Image.open(source_path).convert("RGBA")
         except Exception as e:
             Logger.error(f"Error opening image {source_path}: {e}")
             return None
-
-        # 1. Background Removal (if requested)
+            
+        # Background Removal
         if params.get('use_rembg', False):
-            img = self.remove_background(img)
+            img = self.remove_background(img, params)
+            
+        return img
+
+    def process_image(self, 
+                      source_path: str, 
+                      params: Dict, 
+                      target_size: Tuple[int, int] = (1920, 1080),
+                      frame_path: Optional[str] = None,
+                      preprocessed_image: Optional[Image.Image] = None,
+                      face_center: Optional[Tuple[int, int]] = None) -> Optional[Image.Image]:
+        """
+        Processes an image with the given parameters and optional frame.
+        If preprocessed_image is provided, source_path and rembg params are ignored.
+        """
+        
+        if preprocessed_image:
+            img = preprocessed_image.copy() # Work on copy
+        else:
+            if not source_path:
+                return None
+            img = self.preprocess_image(source_path, params)
+            if not img: return None
 
         # 2. Scaling
         scale = params.get('scale', 1.0)
         if scale != 1.0:
             new_size = (int(img.width * scale), int(img.height * scale))
             img = img.resize(new_size, Image.Resampling.LANCZOS)
-
+            
         # 3. Canvas Composition
         canvas = Image.new("RGBA", target_size, (0, 0, 0, 0))
         
@@ -96,26 +123,65 @@ class ImageProcessor:
         
         return canvas
 
-    def create_face_icon(self, image: Image.Image, size: Tuple[int, int]) -> Image.Image:
+    def create_face_icon(self, image: Image.Image, size: Tuple[int, int], face_center: Optional[Dict] = None, icon_scale: float = 1.0) -> Image.Image:
         """Creates a face icon (face_a, face_b) from the processed image."""
-        # For icons, we might want to crop around the center or resize.
-        # Requirement says: "face_a (96x96)", "face_b (270x96)"
-        # Usually this is a crop of the face area.
-        # For now, we'll just resize/crop the center.
         
-        # Simple center crop and resize strategy
-        img_ratio = image.width / image.height
-        target_ratio = size[0] / size[1]
+        target_w, target_h = size
         
-        if img_ratio > target_ratio:
-            # Image is wider, crop width
-            new_width = int(image.height * target_ratio)
-            left = (image.width - new_width) // 2
-            img = image.crop((left, 0, left + new_width, image.height))
+        # Determine center
+        if face_center:
+            cx, cy = face_center.get('x', image.width // 2), face_center.get('y', image.height // 2)
         else:
-            # Image is taller, crop height
-            new_height = int(image.width / target_ratio)
-            top = (image.height - new_height) // 2
-            img = image.crop((0, top, image.width, top + new_height))
+            cx, cy = image.width // 2, image.height // 2
             
-        return img.resize(size, Image.Resampling.LANCZOS)
+        # Base height for a "Head" at Scale 1.0
+        # This is a heuristic: we assume a standard head/face takes up about 300px height in the original 1080p image.
+        BASE_HEIGHT = 300
+        
+        # Adjust for Icon Scale (Zoom)
+        # Larger scale = Smaller crop (Zoom In)
+        if icon_scale <= 0: icon_scale = 0.1
+        crop_h = int(BASE_HEIGHT / icon_scale)
+        
+        # Calculate Width based on Target Aspect Ratio
+        ratio = target_w / target_h
+        crop_w = int(crop_h * ratio)
+        
+        # Calculate Box centered on cx, cy
+        left = cx - (crop_w // 2)
+        top = cy - (crop_h // 2)
+        right = left + crop_w
+        bottom = top + crop_h
+        
+        # Clamp / Shift to keep within bounds if possible?
+        # If we just clamp, we distort the center.
+        # If we shift, we keep the size but move the center.
+        # Let's try to shift first, then clamp if still too big.
+        
+        img_w, img_h = image.size
+        
+        # Shift horizontally
+        if left < 0:
+            right += -left
+            left = 0
+        if right > img_w:
+            left -= (right - img_w)
+            right = img_w
+            # If still out of bounds (image too narrow), clamp left
+            if left < 0: left = 0
+            
+        # Shift vertically
+        if top < 0:
+            bottom += -top
+            top = 0
+        if bottom > img_h:
+            top -= (bottom - img_h)
+            bottom = img_h
+            # If still out of bounds, clamp top
+            if top < 0: top = 0
+            
+        # Crop
+        crop = image.crop((int(left), int(top), int(right), int(bottom)))
+        
+        # Resize to target
+        return crop.resize(size, Image.Resampling.LANCZOS)

@@ -30,24 +30,53 @@ class FaceManager:
                 Logger.error(f"Error creating base path {self.base_path}: {e}")
 
     def scan_faces(self) -> List[Dict]:
-        """Scans the base path for face folders and loads their data."""
+        """Scans the base path for face folders (face1 to face100). Auto-creates if missing."""
         self.faces = []
         if not os.path.exists(self.base_path):
             return []
 
-        # Scan for face1 to face100 (or any folder starting with face)
-        face_dirs = glob.glob(os.path.join(self.base_path, "face*"))
-        
-        for face_dir in face_dirs:
-            if not os.path.isdir(face_dir):
-                continue
+        # Scan for face1 to face100
+        for i in range(1, 101):
+            dirname = f"face{i}"
+            face_dir = os.path.join(self.base_path, dirname)
+            
+            # Auto-create if missing
+            if not os.path.exists(face_dir):
+                try:
+                    os.makedirs(face_dir)
+                    # Also create sources dir? Maybe wait until used.
+                except OSError as e:
+                    Logger.error(f"Error creating face directory {face_dir}: {e}")
+                    continue
                 
             data = self.load_project_data(face_dir)
             if data:
-                # Add directory path to data for internal use
+                # Managed
                 data['_path'] = face_dir
-                data['_dirname'] = os.path.basename(face_dir)
+                data['_dirname'] = dirname
+                data['_status'] = "managed"
                 self.faces.append(data)
+            else:
+                # Check for existing images (Unmanaged)
+                # We look for standard game files: face_a.png, face_b.png, etc.
+                # Or just any image? Let's check face_a.png as it's the main thumb.
+                has_images = False
+                thumb_path = os.path.join(face_dir, "face_a.png")
+                if os.path.exists(thumb_path):
+                    has_images = True
+                
+                status = "unmanaged" if has_images else "empty"
+                
+                # Create placeholder object
+                transient_data = {
+                    "display_name": f"Face {i}",
+                    "_path": face_dir,
+                    "_dirname": dirname,
+                    "_status": status,
+                    "face_center": None,
+                    "states": {}
+                }
+                self.faces.append(transient_data)
         
         return self.faces
 
@@ -64,37 +93,28 @@ class FaceManager:
             Logger.error(f"Error loading {json_path}: {e}")
             return None
 
-    def create_new_face(self, display_name: str = "New Character") -> Optional[Dict]:
-        """Creates a new face folder and initializes project_data.json."""
-        # Find a free folder name (face1, face2, ...)
-        existing_dirs = {os.path.basename(d) for d in glob.glob(os.path.join(self.base_path, "face*"))}
-        new_dir_name = None
-        for i in range(1, 101):
-            name = f"face{i}"
-            if name not in existing_dirs:
-                new_dir_name = name
-                break
-        
-        if not new_dir_name:
-            Logger.warning("No free face slots available (limit 100).")
+    def initialize_face(self, face_data: Dict) -> Optional[Dict]:
+        """Initializes project_data.json for a transient face slot."""
+        face_dir = face_data.get('_path')
+        if not face_dir:
             return None
-
-        new_dir_path = os.path.join(self.base_path, new_dir_name)
-        try:
-            os.makedirs(new_dir_path)
-            # Create sources directory
-            os.makedirs(os.path.join(new_dir_path, "sources"))
-        except OSError as e:
-            Logger.error(f"Error creating directory {new_dir_path}: {e}")
-            return None
+            
+        # Ensure sources dir exists
+        sources_dir = os.path.join(face_dir, "sources")
+        if not os.path.exists(sources_dir):
+            try:
+                os.makedirs(sources_dir)
+            except OSError as e:
+                Logger.error(f"Error creating sources directory {sources_dir}: {e}")
+                return None
 
         # Initialize data
         new_data = {
             "version": "1.1",
-            "display_name": display_name,
+            "display_name": face_data.get("display_name", "New Character"),
             "uuid": str(uuid.uuid4()),
             "created_at": datetime.datetime.now().isoformat(),
-            "face_center": {"x": 0, "y": 0}, # Default center
+            "face_center": None,
             "frame_id": None,
             "states": {
                 "normal": {
@@ -108,12 +128,12 @@ class FaceManager:
             }
         }
         
-        if self.save_project_data(new_dir_path, new_data):
-            new_data['_path'] = new_dir_path
-            new_data['_dirname'] = new_dir_name
-            self.faces.append(new_data)
-            Logger.info(f"Created new character: {display_name} ({new_dir_name})")
-            return new_data
+        if self.save_project_data(face_dir, new_data):
+            # Merge new data into face_data (which is a reference to the object in self.faces)
+            face_data.update(new_data)
+            face_data['_status'] = "managed"
+            Logger.info(f"Initialized character: {new_data['display_name']} ({face_data['_dirname']})")
+            return face_data
         return None
 
     def save_project_data(self, face_dir: str, data: Dict) -> bool:
@@ -165,11 +185,20 @@ class FaceManager:
             Logger.error(f"Error deleting face {face_dir}: {e}")
             return False
 
-    def undo(self) -> bool:
-        """Undoes the last action."""
+    def push_update_state(self, face_data: Dict):
+        """Pushes the current state of a face to the undo stack before modification."""
+        import copy
+        self.undo_stack.append({
+            'type': 'update',
+            'face_data': copy.deepcopy(face_data),
+            'path': face_data.get('_path')
+        })
+
+    def undo(self) -> Optional[Dict]:
+        """Undoes the last action. Returns the restored face data if applicable."""
         if not self.undo_stack:
             Logger.info("Nothing to undo.")
-            return False
+            return None
             
         action = self.undo_stack.pop()
         action_type = action.get('type')
@@ -184,20 +213,36 @@ class FaceManager:
                 try:
                     # Ensure original path is free (it should be)
                     if os.path.exists(original_path):
-                        # Conflict? Maybe rename?
-                        # For now assume it's free or we overwrite
                         pass
                         
                     shutil.move(trash_path, original_path)
                     self.faces.append(face_data)
-                    # Re-sort faces?
                     Logger.info(f"Undid delete: {face_data.get('display_name')}")
-                    return True
+                    return face_data # Return restored data
                 except Exception as e:
                     Logger.error(f"Undo failed: {e}")
-                    return False
-        
-        return False
+                    return None
+                    
+        elif action_type == 'update':
+            # Restore previous state
+            prev_data = action.get('face_data')
+            path = action.get('path')
+            
+            if path and os.path.exists(path):
+                # Overwrite json
+                if self.save_project_data(path, prev_data):
+                    # Update in-memory list
+                    # Find the face object in self.faces and replace it
+                    for i, f in enumerate(self.faces):
+                        if f.get('_path') == path:
+                            # Restore internal keys
+                            prev_data['_path'] = path
+                            prev_data['_dirname'] = os.path.basename(path)
+                            self.faces[i] = prev_data
+                            Logger.info(f"Undid update: {prev_data.get('display_name')}")
+                            return prev_data
+            
+        return None
 
     def import_source_image(self, face_data: Dict, source_path: str) -> Optional[str]:
         """Imports an image into the sources folder and returns its new UUID."""

@@ -39,9 +39,9 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
             self._bind_events(card, face)
             self.cards.append(card)
             
-        # Add "New" button at bottom
-        add_btn = ctk.CTkButton(self, text=loc.get("new_character"), command=self.add_character)
-        add_btn.pack(pady=10)
+        # Add "New" button at bottom -> Removed as per request (Slot management)
+        # add_btn = ctk.CTkButton(self, text=loc.get("new_character"), command=self.add_character)
+        # add_btn.pack(pady=10)
         
         # Register D&D (External files)
         try:
@@ -225,10 +225,8 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
                         self.on_select_callback(None)
 
     def add_character(self):
-        new_face = self.face_manager.create_new_face()
-        if new_face:
-            self.refresh()
-            self.on_card_click(new_face)
+        # Deprecated: We now initialize on edit
+        pass
 
     def refresh_card(self, face_data):
         self.refresh()
@@ -245,7 +243,8 @@ class CharacterCard(ctk.CTkFrame):
         self.thumb_image = None
         if os.path.exists(thumb_path):
             try:
-                pil_img = Image.open(thumb_path)
+                with Image.open(thumb_path) as img:
+                    pil_img = img.copy()
                 self.thumb_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(48, 48))
             except:
                 pass
@@ -253,8 +252,21 @@ class CharacterCard(ctk.CTkFrame):
         self.lbl_thumb = ctk.CTkLabel(self, text="No Img" if not self.thumb_image else "", image=self.thumb_image)
         self.lbl_thumb.pack(side="left", padx=5, pady=5)
         
+        status = face_data.get('_status', 'managed')
+        
         display_name = face_data.get('display_name', 'Unknown')
-        self.lbl_name = ctk.CTkLabel(self, text=display_name, font=("Arial", 12, "bold"))
+        if status == 'empty':
+            display_name = "(Empty)"
+        elif status == 'unmanaged':
+            display_name = f"{display_name} (Unmanaged)"
+            
+        self.lbl_name = ctk.CTkLabel(self, text=display_name, font=("Arial", 12, "bold" if status == 'managed' else "normal"))
+        
+        if status == 'empty':
+            self.lbl_name.configure(text_color="gray")
+        elif status == 'unmanaged':
+            self.lbl_name.configure(text_color="orange")
+            
         self.lbl_name.pack(side="left", padx=10)
         
         dirname = face_data.get('_dirname', '')

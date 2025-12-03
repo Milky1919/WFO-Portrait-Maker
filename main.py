@@ -8,8 +8,27 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 def load_config():
     config_path = "app_config.json"
+    import locale
+    
+    # Detect OS language and match with available locales
+    from core.localization import loc
+    available_langs = loc.get_available_languages()
+    
+    sys_lang = "JP" # Default fallback
+    try:
+        loc_code = locale.getlocale()[0]
+        if loc_code:
+            # Check for exact match (e.g., "en_US" -> "EN")
+            code_upper = loc_code.split('_')[0].upper()
+            if code_upper in available_langs:
+                sys_lang = code_upper
+            elif "EN" in available_langs and code_upper != "JA":
+                sys_lang = "EN" # Fallback to EN for non-JA systems if available
+    except:
+        pass
+
     default_config = {
-        "language": "JP",
+        "language": sys_lang,
         "window_geometry": "1200x800",
         "last_open_path": ""
     }

@@ -1,0 +1,24 @@
+{
+  "face_c": [
+    {
+      "name": "Safe Zone",
+      "rect": [1000, 100, 800, 900],
+      "color": "#00FF00",
+      "alpha": 0.3
+    },
+    {
+      "name": "Warning Zone",
+      "rect": [900, 50, 1000, 1000],
+      "color": "#FFFF00",
+      "alpha": 0.2
+    }
+  ],
+  "face_d": [
+    {
+      "name": "Battle Center",
+      "rect": [600, 200, 720, 720],
+      "color": "#FF0000",
+      "alpha": 0.3
+    }
+  ]
+}
