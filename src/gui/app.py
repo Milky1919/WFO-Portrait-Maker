@@ -2,15 +2,22 @@ import customtkinter as ctk
 import os
 from core.face_manager import FaceManager
 from core.image_processor import ImageProcessor
-# Imports for frames will be added as files are created
-# from gui.frames.character_list import CharacterListFrame
-# from gui.frames.editor_panel import EditorPanelFrame
-
 from core.localization import loc
 
-class App(ctk.CTk):
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
+    # Dummy class for inheritance if missing
+    class TkinterDnD:
+        class DnDWrapper: pass
+
+class App(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, config):
         super().__init__()
+        if HAS_DND:
+            self.TkdndVersion = TkinterDnD._require(self)
         
         self.config = config
         
@@ -115,9 +122,11 @@ class App(ctk.CTk):
         self.character_list.set_on_select(self.editor_panel.load_character)
         self.editor_panel.set_on_update(self.character_list.refresh_card)
         
+        from core.logger import Logger
+        
         # Footer for Language Switcher and Open Folder
         self.footer_frame = ctk.CTkFrame(self, height=30, fg_color="transparent")
-        self.footer_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
+        self.footer_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 5))
         
         # Open Folder Button (Left)
         self.btn_open_folder = ctk.CTkButton(self.footer_frame, text=loc.get("open_folder"), width=120, command=self.open_face_folder)
@@ -132,19 +141,41 @@ class App(ctk.CTk):
         self.combo_lang.set(current_lang)
         self.combo_lang.pack(side="right", padx=5)
 
+        # Log Area (Bottom)
+        self.log_textbox = ctk.CTkTextbox(self, height=100, state="disabled")
+        self.log_textbox.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
+        
+        # Subscribe to Logger
+        Logger.add_listener(self.append_log)
+        Logger.info("Application started.")
+        
+        # Bind Undo
+        self.bind("<Control-z>", self.undo_action)
+
+    def undo_action(self, event=None):
+        if self.face_manager.undo():
+            self.character_list.refresh()
+            # If editor was empty, maybe clear it or leave it?
+            # If we restored a character, it won't be auto-selected unless we find it.
+            # But refresh is good enough for now.
+
+    def append_log(self, message):
+        self.log_textbox.configure(state="normal")
+        self.log_textbox.insert("end", message + "\n")
+        self.log_textbox.see("end")
+        self.log_textbox.configure(state="disabled")
+
     def open_face_folder(self):
+        from core.logger import Logger
         path = self.config.get("last_open_path")
         if path and os.path.exists(path):
             os.startfile(path)
+            Logger.info(f"Opened face folder: {path}")
         else:
-            print("Face folder path invalid.")
+            Logger.warning("Face folder path invalid.")
 
     def ask_for_directory(self):
         from tkinter import filedialog
-        # Show a dialog explaining why
-        # Since we can't easily show a message box before the main window, 
-        # we'll just open the dialog.
-        # Ideally we would show a small splash or message.
         return filedialog.askdirectory(title="Select Wizardry 'face' directory (Data/User/face)")
 
     def change_language(self, new_lang):

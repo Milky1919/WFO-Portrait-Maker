@@ -4,6 +4,8 @@ import io
 from typing import Optional, Tuple, Dict
 import concurrent.futures
 
+from core.logger import Logger
+
 class ImageProcessor:
     def __init__(self):
         self._rembg_session = None
@@ -18,10 +20,10 @@ class ImageProcessor:
                     import rembg
                     self._rembg_session = rembg.new_session()
                 except ImportError:
-                    print("rembg not installed.")
+                    Logger.error("rembg not installed.")
                     return None
                 except Exception as e:
-                    print(f"Error initializing rembg session: {e}")
+                    Logger.error(f"Error initializing rembg session: {e}")
                     return None
             return self._rembg_session
 
@@ -43,15 +45,10 @@ class ImageProcessor:
     def process_image(self, 
                       source_path: str, 
                       params: Dict, 
-                      target_size: Tuple[int, int] = (1920, 1080)) -> Optional[Image.Image]:
+                      target_size: Tuple[int, int] = (1920, 1080),
+                      frame_path: Optional[str] = None) -> Optional[Image.Image]:
         """
-        Processes an image with the given parameters.
-        params: {
-            'scale': float,
-            'offset_x': int,
-            'offset_y': int,
-            'use_rembg': bool
-        }
+        Processes an image with the given parameters and optional frame.
         """
         if not source_path:
             return None
@@ -59,15 +56,11 @@ class ImageProcessor:
         try:
             img = Image.open(source_path).convert("RGBA")
         except Exception as e:
-            print(f"Error opening image {source_path}: {e}")
+            Logger.error(f"Error opening image {source_path}: {e}")
             return None
 
         # 1. Background Removal (if requested)
         if params.get('use_rembg', False):
-            # Note: This is synchronous here. For UI responsiveness, 
-            # the UI should call remove_background_async separately 
-            # and cache the result, or this method should be run in a thread.
-            # For export, synchronous is fine.
             img = self.remove_background(img)
 
         # 2. Scaling
@@ -77,25 +70,29 @@ class ImageProcessor:
             img = img.resize(new_size, Image.Resampling.LANCZOS)
 
         # 3. Canvas Composition
-        # Create a blank canvas of target size
         canvas = Image.new("RGBA", target_size, (0, 0, 0, 0))
         
-        # Calculate position
-        # Default center of canvas
         cx, cy = target_size[0] // 2, target_size[1] // 2
-        
-        # Image center
         ix, iy = img.width // 2, img.height // 2
         
-        # Apply offsets
         offset_x = params.get('offset_x', 0)
         offset_y = params.get('offset_y', 0)
         
-        # Paste position (top-left)
         paste_x = cx - ix + offset_x
         paste_y = cy - iy + offset_y
         
         canvas.alpha_composite(img, (int(paste_x), int(paste_y)))
+        
+        # 4. Frame Overlay
+        if frame_path and os.path.exists(frame_path):
+            try:
+                frame_img = Image.open(frame_path).convert("RGBA")
+                # Resize frame to target size if needed (assuming frames match target size)
+                if frame_img.size != target_size:
+                    frame_img = frame_img.resize(target_size, Image.Resampling.LANCZOS)
+                canvas.alpha_composite(frame_img, (0, 0))
+            except Exception as e:
+                Logger.error(f"Error loading frame {frame_path}: {e}")
         
         return canvas
 

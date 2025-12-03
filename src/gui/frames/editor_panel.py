@@ -42,6 +42,14 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         self._init_controls()
         
+        # Register D&D
+        try:
+            from tkinterdnd2 import DND_FILES
+            self.drop_target_register(DND_FILES)
+            self.dnd_bind('<<Drop>>', self.on_drop)
+        except Exception as e:
+            print(f"D&D setup failed: {e}")
+        
         # Initially hide editor
         self.show_editor(False)
 
@@ -86,6 +94,24 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.combo_state.set(loc.get("states.normal"))
         self.combo_state.pack(fill="x", padx=10, pady=5)
         
+        # Frame Selection
+        self.frame_container = ctk.CTkFrame(self.controls_frame)
+        self.frame_container.pack(fill="x", padx=10, pady=5)
+        
+        self.lbl_frame = ctk.CTkLabel(self.frame_container, text="Frame")
+        self.lbl_frame.pack(anchor="w", padx=5)
+        
+        self.combo_frame = ctk.CTkComboBox(self.frame_container, command=self.change_frame)
+        self.combo_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Register D&D for frame container
+        try:
+            from tkinterdnd2 import DND_FILES
+            self.frame_container.drop_target_register(DND_FILES)
+            self.frame_container.dnd_bind('<<Drop>>', self.on_drop_frame)
+        except:
+            pass
+
         # Image Source
         self.btn_import = ctk.CTkButton(self.controls_frame, text=loc.get("import_image"), command=self.import_image)
         self.btn_import.pack(fill="x", padx=10, pady=10)
@@ -102,8 +128,6 @@ class EditorPanelFrame(ctk.CTkFrame):
         # Save
         self.btn_save = ctk.CTkButton(self.controls_frame, text=loc.get("save_export"), fg_color="green", command=self.save_character)
         self.btn_save.pack(fill="x", padx=10, pady=20)
-        
-        # Delete button moved to main layout
 
     def _create_slider(self, label, from_, to, default):
         frame = ctk.CTkFrame(self.controls_frame)
@@ -129,6 +153,26 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.entry_name.insert(0, face_data.get('display_name', ''))
         self.change_state("normal") # Reset to normal on load
         self.combo_state.set(loc.get("states.normal"))
+        
+        # Load Frames
+        frames = ["None"] + self.face_manager.scan_frames()
+        self.combo_frame.configure(values=frames)
+        current_frame = face_data.get('frame_id', "None")
+        if current_frame not in frames:
+            current_frame = "None"
+        self.combo_frame.set(current_frame)
+
+    def change_frame(self, selected_frame):
+        if not self.current_face:
+            return
+        
+        if selected_frame == "None":
+            self.current_face['frame_id'] = None
+        else:
+            self.current_face['frame_id'] = selected_frame
+            
+        self._save_json()
+        self.update_preview()
 
     def change_state_from_combo(self, selected_value):
         state_key = self.state_map.get(selected_value)
@@ -164,17 +208,52 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         file_path = filedialog.askopenfilename(filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.webp")])
         if file_path:
-            uuid = self.face_manager.import_source_image(self.current_face, file_path)
-            if uuid:
-                # Update current state source
-                if 'states' not in self.current_face:
-                    self.current_face['states'] = {}
-                if self.current_state_key not in self.current_face['states']:
-                    self.current_face['states'][self.current_state_key] = {}
-                    
-                self.current_face['states'][self.current_state_key]['source_uuid'] = uuid
-                self._save_json()
-                self.update_preview()
+            self._import_file(file_path)
+
+    def on_drop(self, event):
+        if not self.current_face:
+            return
+            
+        files = self.tk.splitlist(event.data)
+        if not files: return
+        
+        file_path = files[0] # Take first file
+        if os.path.isfile(file_path):
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp']:
+                from core.logger import Logger
+                Logger.info(f"Dropped image on editor: {os.path.basename(file_path)}")
+                self._import_file(file_path)
+
+    def on_drop_frame(self, event):
+        files = self.tk.splitlist(event.data)
+        if not files: return
+        
+        file_path = files[0]
+        if os.path.isfile(file_path):
+            from core.logger import Logger
+            Logger.info(f"Dropped frame: {os.path.basename(file_path)}")
+            
+            imported_name = self.face_manager.import_frame(file_path)
+            if imported_name:
+                # Refresh list and select
+                frames = ["None"] + self.face_manager.scan_frames()
+                self.combo_frame.configure(values=frames)
+                self.combo_frame.set(imported_name)
+                self.change_frame(imported_name)
+
+    def _import_file(self, file_path):
+        uuid = self.face_manager.import_source_image(self.current_face, file_path)
+        if uuid:
+            # Update current state source
+            if 'states' not in self.current_face:
+                self.current_face['states'] = {}
+            if self.current_state_key not in self.current_face['states']:
+                self.current_face['states'][self.current_state_key] = {}
+                
+            self.current_face['states'][self.current_state_key]['source_uuid'] = uuid
+            self._save_json()
+            self.update_preview()
 
     def update_preview(self):
         if not self.current_face:
@@ -203,12 +282,17 @@ class EditorPanelFrame(ctk.CTkFrame):
             self.lbl_preview.configure(image=None, text="Image Not Found")
             return
 
+        # Frame
+        frame_id = self.current_face.get('frame_id')
+        frame_path = self.face_manager.get_frame_path(frame_id)
+
         # Process Image
         # Note: In a real app, run this in a thread to avoid UI freeze
         processed_img = self.image_processor.process_image(
             source_path, 
             state_data, 
-            target_size=(1920, 1080)
+            target_size=(1920, 1080),
+            frame_path=frame_path
         )
         
         if processed_img:
@@ -224,6 +308,7 @@ class EditorPanelFrame(ctk.CTkFrame):
             
             ctk_img = ctk.CTkImage(light_image=preview_img, dark_image=preview_img, size=(new_width, new_height))
             self.lbl_preview.configure(image=ctk_img, text="")
+            self.current_image = ctk_img # Keep reference to prevent GC
         else:
             self.lbl_preview.configure(image=None, text="Error Processing")
 
@@ -252,9 +337,12 @@ class EditorPanelFrame(ctk.CTkFrame):
             source_path = self.face_manager.get_source_path(self.current_face, source_uuid)
             if not source_path: return
             
+            frame_id = self.current_face.get('frame_id')
+            frame_path = self.face_manager.get_frame_path(frame_id)
+            
             # Render 1920x1080 (face_c)
             # Use a thread or just sync for now (Export is usually blocking but fast enough)
-            img_full = self.image_processor.process_image(source_path, state_data, (1920, 1080))
+            img_full = self.image_processor.process_image(source_path, state_data, (1920, 1080), frame_path=frame_path)
             if img_full:
                 # Save face_c
                 filename = f"face_c{suffix}.png"
@@ -282,7 +370,8 @@ class EditorPanelFrame(ctk.CTkFrame):
         for key, suffix in suffix_map.items():
             export_state(key, suffix)
             
-        print(f"Saved character to {face_dir}") 
+        from core.logger import Logger
+        Logger.info(f"Saved character to {face_dir}")
 
     def delete_character(self):
         if not self.current_face:
@@ -293,11 +382,6 @@ class EditorPanelFrame(ctk.CTkFrame):
             if self.face_manager.delete_face(self.current_face):
                 # Notify App to refresh list
                 if self.on_update_callback:
-                    # We pass a dummy or None to signal refresh, 
-                    # but refresh_card expects face_data.
-                    # Actually CharacterListFrame.refresh_card calls refresh() which re-scans.
-                    # So passing None might be fine if handled, or we need a better signal.
-                    # Let's just call the callback.
                     self.on_update_callback(None)
                 
                 # Clear editor
