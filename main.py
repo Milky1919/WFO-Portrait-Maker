@@ -32,22 +32,10 @@ def main():
     ctk.set_appearance_mode("Dark")
     ctk.set_default_color_theme("blue")
     
-    # Placeholder for App class
-    # app = App(config)
-    # app.mainloop()
+    from gui.app import App
     
-    print("WFO Portrait Maker initialized.")
-    print(f"Config loaded: {config}")
-
-    # Temporary window to verify setup
-    root = ctk.CTk()
-    root.geometry(config.get("window_geometry", "1200x800"))
-    root.title("WFO Portrait Maker")
-    
-    label = ctk.CTkLabel(root, text="WFO Portrait Maker Initialized", font=("Arial", 20))
-    label.pack(pady=20)
-    
-    root.mainloop()
+    app = App(config)
+    app.mainloop()
 
 if __name__ == "__main__":
     main()

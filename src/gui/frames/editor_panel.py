@@ -5,6 +5,8 @@ from core.face_manager import FaceManager
 from core.image_processor import ImageProcessor
 import os
 
+from core.localization import loc
+
 class EditorPanelFrame(ctk.CTkFrame):
     def __init__(self, master, face_manager: FaceManager, image_processor: ImageProcessor, **kwargs):
         super().__init__(master, **kwargs)
@@ -18,52 +20,90 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1) # Preview
         self.grid_columnconfigure(1, weight=0) # Controls
         self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0) # Delete button area
+        
+        # Placeholder (Empty State)
+        self.lbl_empty = ctk.CTkLabel(self, text=loc.get("select_character"), font=("Arial", 16))
+        self.lbl_empty.grid(row=0, column=0, columnspan=2, sticky="nsew")
         
         # Preview Area
         self.preview_frame = ctk.CTkFrame(self)
         self.preview_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        self.lbl_preview = ctk.CTkLabel(self.preview_frame, text="Select a character")
+        self.lbl_preview = ctk.CTkLabel(self.preview_frame, text="")
         self.lbl_preview.pack(expand=True, fill="both")
         
         # Controls Area
-        self.controls_frame = ctk.CTkScrollableFrame(self, width=350, label_text="Edit")
+        self.controls_frame = ctk.CTkScrollableFrame(self, width=350, label_text=loc.get("edit"))
         self.controls_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
         
+        # Delete Button (Outside scrollable frame, at bottom right)
+        self.btn_delete = ctk.CTkButton(self, text=loc.get("delete"), fg_color="red", hover_color="darkred", command=self.delete_character)
+        self.btn_delete.grid(row=1, column=1, sticky="ew", padx=10, pady=10)
+        
         self._init_controls()
+        
+        # Initially hide editor
+        self.show_editor(False)
+
+    def show_editor(self, show: bool):
+        if show:
+            self.lbl_empty.grid_remove()
+            self.preview_frame.grid()
+            self.controls_frame.grid()
+            self.btn_delete.grid()
+        else:
+            self.preview_frame.grid_remove()
+            self.controls_frame.grid_remove()
+            self.btn_delete.grid_remove()
+            self.lbl_empty.grid()
 
     def _init_controls(self):
         # Name
-        self.entry_name = ctk.CTkEntry(self.controls_frame, placeholder_text="Display Name")
+        self.entry_name = ctk.CTkEntry(self.controls_frame, placeholder_text=loc.get("display_name"))
         self.entry_name.pack(fill="x", padx=10, pady=5)
-        self.btn_update_name = ctk.CTkButton(self.controls_frame, text="Update Name", command=self.update_name)
+        self.btn_update_name = ctk.CTkButton(self.controls_frame, text=loc.get("update_name"), command=self.update_name)
         self.btn_update_name.pack(fill="x", padx=10, pady=5)
         
         # State Selector
-        self.lbl_state = ctk.CTkLabel(self.controls_frame, text="State:")
+        self.lbl_state = ctk.CTkLabel(self.controls_frame, text=loc.get("state"))
         self.lbl_state.pack(anchor="w", padx=10)
-        self.combo_state = ctk.CTkComboBox(self.controls_frame, values=[
-            "normal", "poison", "hp_75", "hp_50", "hp_25", "dead", 
-            "afraid", "sleep", "paralyzed", "stoned", "ashed"
-        ], command=self.change_state)
-        self.combo_state.set("normal")
+        
+        # Map display names to keys for combo box
+        self.state_map = {
+            loc.get("states.normal"): "normal",
+            loc.get("states.poison"): "poison",
+            loc.get("states.hp_75"): "hp_75",
+            loc.get("states.hp_50"): "hp_50",
+            loc.get("states.hp_25"): "hp_25",
+            loc.get("states.dead"): "dead",
+            loc.get("states.afraid"): "afraid",
+            loc.get("states.sleep"): "sleep",
+            loc.get("states.paralyzed"): "paralyzed",
+            loc.get("states.stoned"): "stoned",
+            loc.get("states.ashed"): "ashed"
+        }
+        self.combo_state = ctk.CTkComboBox(self.controls_frame, values=list(self.state_map.keys()), command=self.change_state_from_combo)
+        self.combo_state.set(loc.get("states.normal"))
         self.combo_state.pack(fill="x", padx=10, pady=5)
         
         # Image Source
-        self.btn_import = ctk.CTkButton(self.controls_frame, text="Import Image", command=self.import_image)
+        self.btn_import = ctk.CTkButton(self.controls_frame, text=loc.get("import_image"), command=self.import_image)
         self.btn_import.pack(fill="x", padx=10, pady=10)
         
         # Sliders
-        self.slider_scale = self._create_slider("Scale", 0.1, 2.0, 1.0)
-        self.slider_x = self._create_slider("Offset X", -500, 500, 0)
-        self.slider_y = self._create_slider("Offset Y", -500, 500, 0)
+        self.slider_scale = self._create_slider(loc.get("scale"), 0.1, 2.0, 1.0)
+        self.slider_x = self._create_slider(loc.get("offset_x"), -500, 500, 0)
+        self.slider_y = self._create_slider(loc.get("offset_y"), -500, 500, 0)
         
         # Switches
-        self.switch_rembg = ctk.CTkSwitch(self.controls_frame, text="Remove Background", command=self.update_preview)
+        self.switch_rembg = ctk.CTkSwitch(self.controls_frame, text=loc.get("remove_background"), command=self.update_preview)
         self.switch_rembg.pack(padx=10, pady=10)
         
         # Save
-        self.btn_save = ctk.CTkButton(self.controls_frame, text="Save (Export)", fg_color="green", command=self.save_character)
+        self.btn_save = ctk.CTkButton(self.controls_frame, text=loc.get("save_export"), fg_color="green", command=self.save_character)
         self.btn_save.pack(fill="x", padx=10, pady=20)
+        
+        # Delete button moved to main layout
 
     def _create_slider(self, label, from_, to, default):
         frame = ctk.CTkFrame(self.controls_frame)
@@ -80,10 +120,16 @@ class EditorPanelFrame(ctk.CTkFrame):
 
     def load_character(self, face_data):
         self.current_face = face_data
+        self.show_editor(True) # Show editor
         self.entry_name.delete(0, "end")
         self.entry_name.insert(0, face_data.get('display_name', ''))
         self.change_state("normal") # Reset to normal on load
-        self.combo_state.set("normal")
+        self.combo_state.set(loc.get("states.normal"))
+
+    def change_state_from_combo(self, selected_value):
+        state_key = self.state_map.get(selected_value)
+        if state_key:
+            self.change_state(state_key)
 
     def change_state(self, state_key):
         self.current_state_key = state_key
@@ -233,6 +279,27 @@ class EditorPanelFrame(ctk.CTkFrame):
             export_state(key, suffix)
             
         print(f"Saved character to {face_dir}") 
+
+    def delete_character(self):
+        if not self.current_face:
+            return
+            
+        from tkinter import messagebox
+        if messagebox.askyesno(loc.get("delete"), loc.get("confirm_delete")):
+            if self.face_manager.delete_face(self.current_face):
+                # Notify App to refresh list
+                if self.on_update_callback:
+                    # We pass a dummy or None to signal refresh, 
+                    # but refresh_card expects face_data.
+                    # Actually CharacterListFrame.refresh_card calls refresh() which re-scans.
+                    # So passing None might be fine if handled, or we need a better signal.
+                    # Let's just call the callback.
+                    self.on_update_callback(None)
+                
+                # Clear editor
+                self.current_face = None
+                self.show_editor(False)
+                self.entry_name.delete(0, "end")
 
     def _save_json(self):
         face_dir = self.current_face.get('_path')

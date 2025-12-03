@@ -5,9 +5,11 @@ from PIL import Image
 
 import tkinter
 
+from core.localization import loc
+
 class CharacterListFrame(ctk.CTkScrollableFrame):
     def __init__(self, master, face_manager: FaceManager, **kwargs):
-        super().__init__(master, label_text="Characters", **kwargs)
+        super().__init__(master, label_text=loc.get("characters"), **kwargs)
         self.face_manager = face_manager
         self.on_select_callback = None
         self.cards = []
@@ -32,7 +34,7 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
             self.cards.append(card)
             
         # Add "New" button at bottom
-        add_btn = ctk.CTkButton(self, text="+ New Character", command=self.add_character)
+        add_btn = ctk.CTkButton(self, text=loc.get("new_character"), command=self.add_character)
         add_btn.pack(pady=10)
 
     def _bind_click(self, widget, face):
@@ -42,13 +44,22 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
             self._bind_click(child, face)
 
     def show_context_menu(self, event, face):
+        # Select the card first
+        self.on_card_click(face)
+        
         menu = tkinter.Menu(self, tearoff=0)
-        menu.add_command(label="Delete", command=lambda: self.delete_character(face))
+        menu.add_command(label=loc.get("delete"), command=lambda: self.delete_character(face))
         menu.post(event.x_root, event.y_root)
 
     def delete_character(self, face):
-        if self.face_manager.delete_face(face):
-            self.refresh()
+        from tkinter import messagebox
+        if messagebox.askyesno(loc.get("delete"), loc.get("confirm_delete")):
+            if self.face_manager.delete_face(face):
+                self.refresh()
+                # If we deleted the currently selected face, clear selection in editor
+                # Ideally we callback with None
+                if self.on_select_callback:
+                    self.on_select_callback(None)
 
     def add_character(self):
         new_face = self.face_manager.create_new_face()
@@ -58,6 +69,16 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
                 self.on_select_callback(new_face)
 
     def on_card_click(self, face):
+        # Update selection visual
+        for card in self.cards:
+            card.set_selected(False)
+        
+        # Find the card that was clicked (this is a bit inefficient but safe)
+        for card in self.cards:
+            if card.face_data == face:
+                card.set_selected(True)
+                break
+
         if self.on_select_callback:
             self.on_select_callback(face)
     
@@ -69,6 +90,7 @@ class CharacterCard(ctk.CTkFrame):
     def __init__(self, master, face_data):
         super().__init__(master)
         self.face_data = face_data
+        self.default_fg_color = self._fg_color
         
         # Try to load thumbnail (face_a.png)
         face_dir = face_data.get('_path')
@@ -95,3 +117,9 @@ class CharacterCard(ctk.CTkFrame):
         dirname = face_data.get('_dirname', '')
         self.lbl_id = ctk.CTkLabel(self, text=dirname, font=("Arial", 10))
         self.lbl_id.pack(side="right", padx=5)
+
+    def set_selected(self, selected: bool):
+        if selected:
+            self.configure(fg_color=("gray75", "gray25"), border_width=2, border_color="blue")
+        else:
+            self.configure(fg_color=self.default_fg_color, border_width=0)
