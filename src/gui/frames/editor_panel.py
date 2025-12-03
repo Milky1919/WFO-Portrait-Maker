@@ -1,4 +1,5 @@
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import filedialog
 from PIL import Image, ImageTk, ImageDraw
 from core.face_manager import FaceManager
@@ -10,6 +11,33 @@ from gui.dialogs.progress_dialog import ProgressDialog
 from core.localization import loc
 from core.rembg_downloader import RembgDownloader
 import threading
+
+class LoadingOverlay(ctk.CTkFrame):
+    def __init__(self, master, **kwargs):
+        super().__init__(master, fg_color=("gray85", "gray25"), **kwargs)
+        self.place(relx=0, rely=0, relwidth=1, relheight=1)
+        
+        self.center_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.center_frame.place(relx=0.5, rely=0.5, anchor="center")
+        
+        self.spinner = ctk.CTkProgressBar(self.center_frame, orientation="horizontal", mode="indeterminate", width=200)
+        self.spinner.pack(pady=10)
+        self.spinner.start()
+        
+        self.label = ctk.CTkLabel(self.center_frame, text="Loading...", font=("Arial", 16))
+        self.label.pack(pady=5)
+        
+        self.lift() # Ensure on top
+        
+    def show(self):
+        self.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.spinner.start()
+        self.lift()
+        self.update_idletasks() # Force render
+        
+    def hide(self):
+        self.place_forget()
+        self.spinner.stop()
 
 class EditorPanelFrame(ctk.CTkFrame):
     def __init__(self, master, face_manager: FaceManager, image_processor: ImageProcessor, **kwargs):
@@ -75,7 +103,8 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.preview_frame = ctk.CTkFrame(self.preview_container)
         self.preview_frame.pack(expand=True, fill="both")
         
-        self.lbl_preview = ctk.CTkLabel(self.preview_frame, text="", anchor="center")
+        # Use standard tk.Label for robustness against CTkImage TclErrors
+        self.lbl_preview = tk.Label(self.preview_frame, text="", bg="gray20") # Match dark theme roughly
         self.lbl_preview.place(relx=0.5, rely=0.5, anchor="center")
         
         # Individual Adjust Indicator (Overlay)
@@ -116,6 +145,10 @@ class EditorPanelFrame(ctk.CTkFrame):
         except Exception as e:
             print(f"D&D setup failed: {e}")
         
+        self.loading_overlay = LoadingOverlay(self)
+        self.loading_overlay.hide()
+        self.is_loading = False
+
         # Initially hide editor
         self.show_editor(False)
 
@@ -133,6 +166,8 @@ class EditorPanelFrame(ctk.CTkFrame):
         # Clear Preview Label
         try:
             self.lbl_preview.configure(image=None, text="")
+            self.lbl_icon_a.configure(image=None)
+            self.lbl_icon_b.configure(image=None)
         except:
             pass
             
@@ -242,6 +277,9 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.switch_guide = ctk.CTkSwitch(self.guide_frame, text=loc.get("show_guides"), command=self.toggle_guides)
         self.switch_guide.pack(side="left", padx=10)
         
+        self.switch_game_ui = ctk.CTkSwitch(self.guide_frame, text=loc.get("show_game_ui"), command=self.update_preview)
+        self.switch_game_ui.pack(side="left", padx=10)
+        
         # RemBG Controls
         self.rembg_frame = ctk.CTkFrame(self.controls_frame)
         self.rembg_frame.pack(fill="x", padx=10, pady=10)
@@ -288,13 +326,13 @@ class EditorPanelFrame(ctk.CTkFrame):
         # Frame for Border
         self.frame_icon_b = ctk.CTkFrame(self.icon_overlay_frame, border_width=2, border_color="gray")
         self.frame_icon_b.pack(side="right", padx=5)
-        self.lbl_icon_b = ctk.CTkLabel(self.frame_icon_b, text="")
+        self.lbl_icon_b = tk.Label(self.frame_icon_b, bg="gray20")
         self.lbl_icon_b.pack(padx=2, pady=2)
         
         # Icon A (Square)
         self.frame_icon_a = ctk.CTkFrame(self.icon_overlay_frame, border_width=2, border_color="gray")
         self.frame_icon_a.pack(side="right", padx=5)
-        self.lbl_icon_a = ctk.CTkLabel(self.frame_icon_a, text="")
+        self.lbl_icon_a = tk.Label(self.frame_icon_a, bg="gray20")
         self.lbl_icon_a.pack(padx=2, pady=2)
         
         # Save
@@ -612,53 +650,122 @@ class EditorPanelFrame(ctk.CTkFrame):
     def set_on_update(self, callback):
         self.on_update_callback = callback
 
+    def _update_state_combo(self):
+        if not self.current_face: return
+        
+        states = self.current_face.get('states', {})
+        available_keys = []
+        
+        # Always include current state (to prevent lock-out)
+        available_keys.append(self.current_state_key)
+        
+        # Include states that have a source_uuid
+        for key in self.state_map.values():
+            if key == self.current_state_key: continue
+            
+            state_data = states.get(key)
+            if state_data and state_data.get('source_uuid'):
+                available_keys.append(key)
+                
+        # Sort based on original map order
+        ordered_keys = []
+        for key in self.state_map.values():
+            if key in available_keys:
+                ordered_keys.append(key)
+                
+        # Map back to display names
+        display_values = []
+        for key in ordered_keys:
+            # Find name for key
+            for name, k in self.state_map.items():
+                if k == key:
+                    display_values.append(name)
+                    break
+                    
+        self.combo_state.configure(values=display_values)
+        
+        # Ensure current selection is valid
+        current_name = ""
+        for name, k in self.state_map.items():
+            if k == self.current_state_key:
+                current_name = name
+                break
+        self.combo_state.set(current_name)
+
+        # Show Editor (Triggers update_preview)
+        self.show_editor(True)
+        
+        # Hide loading overlay
+        self.loading_overlay.hide()
+
     def load_character(self, face_data):
-        # Save previous character if exists
-        if self.current_face:
-            self._save_json()
-            
-        if not face_data:
+        # Show loading overlay
+        self.loading_overlay.show()
+        
+        # Use after(10) to allow UI to render the overlay before heavy lifting
+        # Use after(10) to allow UI to render the overlay before heavy lifting
+        self.after(10, lambda: self._load_character_internal(face_data))
+        
+    def _load_character_internal(self, face_data):
+        self.is_loading = True
+        try:
+            # Save previous character if exists
+            if self.current_face:
+                self._save_json()
+                
+            # Clear previous state to avoid TclError
             self.clear_editor()
-            return
-
-        # Initialize if not managed
-        status = face_data.get('_status', 'managed')
-        if status != 'managed':
-            # Initialize it
-            face_data = self.face_manager.initialize_face(face_data)
+                
             if not face_data:
-                # Failed to init
                 return
-            # Notify list to update status (e.g. remove "Empty" tag)
-            if self.on_update_callback:
-                self.on_update_callback(face_data)
 
-        self.current_face = face_data
+            # Initialize if not managed
+            status = face_data.get('_status', 'managed')
+            if status != 'managed':
+                # Initialize it
+                face_data = self.face_manager.initialize_face(face_data)
+                if not face_data:
+                    # Failed to init
+                    return
+                # Notify list to update status (e.g. remove "Empty" tag)
+                if self.on_update_callback:
+                    self.on_update_callback(face_data)
+
+            self.current_face = face_data
+                
+            # Load Settings FIRST (Before showing editor/preview)
+            self.entry_name.delete(0, "end")
+            self.entry_name.insert(0, face_data.get('display_name', ''))
+            self.change_state("normal", save_before_switch=False) # Reset to normal on load
+            self._update_state_combo()
             
-        self.show_editor(True) # Show editor
-        self.entry_name.delete(0, "end")
-        self.entry_name.insert(0, face_data.get('display_name', ''))
-        self.change_state("normal") # Reset to normal on load
-        self.combo_state.set(loc.get("states.normal"))
-        
-        # Load Frames
-        frames = ["None"] + self.face_manager.scan_frames()
-        self.combo_frame.configure(values=frames)
-        current_frame = face_data.get('frame_id', "None")
-        if current_frame not in frames:
-            current_frame = "None"
-        self.combo_frame.set(current_frame)
-        
-        # Load Face Center
-        fc = face_data.get('face_center')
-        if fc:
-            self.spin_fc_x.delete(0, "end")
-            self.spin_fc_x.insert(0, str(fc.get('x', 0)))
-            self.spin_fc_y.delete(0, "end")
-            self.spin_fc_y.insert(0, str(fc.get('y', 0)))
-        else:
-            self.spin_fc_x.delete(0, "end")
-            self.spin_fc_y.delete(0, "end")
+            # Load Frames
+            frames = ["None"] + self.face_manager.scan_frames()
+            self.combo_frame.configure(values=frames)
+            current_frame = face_data.get('frame_id', "None")
+            if current_frame not in frames:
+                current_frame = "None"
+            self.combo_frame.set(current_frame)
+            
+            # Load Face Center
+            fc = face_data.get('face_center')
+            if fc:
+                self.spin_fc_x.delete(0, "end")
+                self.spin_fc_x.insert(0, str(fc.get('x', 0)))
+                self.spin_fc_y.delete(0, "end")
+                self.spin_fc_y.insert(0, str(fc.get('y', 0)))
+            else:
+                self.spin_fc_x.delete(0, "end")
+                self.spin_fc_y.delete(0, "end")
+
+            # Show Editor
+            self.show_editor(True)
+            
+        finally:
+            self.is_loading = False
+            self.loading_overlay.hide()
+            # Schedule update to allow UI to settle and prevent TclError
+            self.after(200, self.update_preview)
 
     def change_frame(self, selected_frame):
         if not self.current_face:
@@ -679,15 +786,9 @@ class EditorPanelFrame(ctk.CTkFrame):
         if state_key:
             self.change_state(state_key)
 
-    def change_state(self, state_key):
+    def change_state(self, state_key, save_before_switch=True):
         # Save previous state before switching
-        if self.current_face:
-            # FORCE SAVE current UI settings to data
-            # This ensures that if we switch states, the current modifications are not lost
-            # even if update_preview hasn't fully committed them yet (though it should have).
-            # But update_preview relies on sliders.
-            # Let's explicitly call a method to commit UI to Data.
-            self._commit_ui_to_data()
+        if self.current_face and save_before_switch:
             self._save_json()
             
         self.current_state_key = state_key
@@ -697,69 +798,6 @@ class EditorPanelFrame(ctk.CTkFrame):
         states = self.current_face.get('states', {})
         state_data = states.get(state_key, {})
         
-        # Helper to get value with fallback to defaults
-        defaults = self.current_face.get('defaults', {})
-        def get_val(key, default):
-            return state_data.get(key) if state_data.get(key) is not None else defaults.get(key, default)
-
-        # Load values to sliders
-        scale_val = get_val('scale', 1.0)
-        self.slider_scale.set(scale_val)
-        self.slider_scale.entry_widget.delete(0, "end")
-        self.slider_scale.entry_widget.insert(0, f"{scale_val:.2f}")
-        
-        off_x = get_val('offset_x', 0)
-        self.slider_x.set(off_x)
-        self.slider_x.entry_widget.delete(0, "end")
-        self.slider_x.entry_widget.insert(0, str(off_x))
-        
-        off_y = get_val('offset_y', 0)
-        self.slider_y.set(off_y)
-        self.slider_y.entry_widget.delete(0, "end")
-        self.slider_y.entry_widget.insert(0, str(off_y))
-        
-        # Icon Scales (Fallback to 'icon_scale' legacy key if A/B missing)
-        legacy_scale = state_data.get('icon_scale', 1.0)
-        
-        scale_a = state_data.get('icon_scale_a')
-        if scale_a is None: scale_a = defaults.get('icon_scale_a', legacy_scale)
-            
-        scale_b = state_data.get('icon_scale_b')
-        if scale_b is None: scale_b = defaults.get('icon_scale_b', legacy_scale)
-        
-        self.slider_icon_scale_a.set(scale_a)
-        self.slider_icon_scale_a.entry_widget.delete(0, "end")
-        self.slider_icon_scale_a.entry_widget.insert(0, f"{scale_a:.2f}")
-        
-        self.slider_icon_scale_b.set(scale_b)
-        self.slider_icon_scale_b.entry_widget.delete(0, "end")
-        self.slider_icon_scale_b.entry_widget.insert(0, f"{scale_b:.2f}")
-        
-        use_rembg = get_val('use_rembg', False)
-        if use_rembg:
-            self.switch_rembg.select()
-            self.rembg_settings_frame.pack(fill="x", padx=5, pady=5)
-        else:
-            self.switch_rembg.deselect()
-            self.rembg_settings_frame.pack_forget()
-            
-        # Load Fine-tuning
-        alpha = get_val('alpha_matting', False)
-        self.switch_alpha.select() if alpha else self.switch_alpha.deselect()
-        self.slider_fg_thresh.set(get_val('alpha_matting_foreground_threshold', 240))
-        self.slider_bg_thresh.set(get_val('alpha_matting_background_threshold', 10))
-        self.slider_erode.set(get_val('alpha_matting_erode_size', 10))
-        
-        # Restore Individual Mode
-        is_individual = state_data.get('is_individual', False)
-        if is_individual:
-            self.chk_individual_mode.select()
-            self.lbl_individual_indicator.place(x=10, y=10)
-            self.lbl_individual_indicator.lift()
-        else:
-            self.chk_individual_mode.deselect()
-            self.lbl_individual_indicator.place_forget()
-            
         # Load Face Center
         face_center = state_data.get('face_center')
         if not face_center:
@@ -956,23 +994,42 @@ class EditorPanelFrame(ctk.CTkFrame):
                 
             self.current_face['states'][state_key]['source_uuid'] = uuid
             
-            # Auto-Fit (Reuse logic)
-            try:
-                with Image.open(file_path) as img:
-                    w, h = img.size
-                    scale = 1.0
-                    if h > 1080: scale = 1080 / h
-                    if w * scale > 1920: scale = 1920 / w
-                    
-                    self.current_face['states'][state_key]['scale'] = round(scale, 2)
-                    self.current_face['states'][state_key]['offset_x'] = 0
-                    self.current_face['states'][state_key]['offset_y'] = 0
-            except:
-                pass
+            # Apply Global Defaults if available
+            defaults = self.current_face.get('defaults')
+            if defaults:
+                self.current_face['states'][state_key]['scale'] = defaults.get('scale', 1.0)
+                self.current_face['states'][state_key]['offset_x'] = defaults.get('offset_x', 0)
+                self.current_face['states'][state_key]['offset_y'] = defaults.get('offset_y', 0)
+                self.current_face['states'][state_key]['face_center'] = defaults.get('face_center')
+                self.current_face['states'][state_key]['icon_scale_a'] = defaults.get('icon_scale_a')
+                self.current_face['states'][state_key]['icon_scale_b'] = defaults.get('icon_scale_b')
+                self.current_face['states'][state_key]['use_rembg'] = defaults.get('use_rembg', False)
+                self.current_face['states'][state_key]['alpha_matting'] = defaults.get('alpha_matting', False)
+                self.current_face['states'][state_key]['alpha_matting_foreground_threshold'] = defaults.get('alpha_matting_foreground_threshold', 240)
+                self.current_face['states'][state_key]['alpha_matting_background_threshold'] = defaults.get('alpha_matting_background_threshold', 10)
+                self.current_face['states'][state_key]['alpha_matting_erode_size'] = defaults.get('alpha_matting_erode_size', 10)
+                
+                # Ensure it's linked to Global
+                self.current_face['states'][state_key]['is_individual'] = False
+            else:
+                # Auto-Fit (Fallback)
+                try:
+                    with Image.open(file_path) as img:
+                        w, h = img.size
+                        scale = 1.0
+                        if h > 1080: scale = 1080 / h
+                        if w * scale > 1920: scale = 1920 / w
+                        
+                        self.current_face['states'][state_key]['scale'] = round(scale, 2)
+                        self.current_face['states'][state_key]['offset_x'] = 0
+                        self.current_face['states'][state_key]['offset_y'] = 0
+                except:
+                    pass
 
             if save:
                 self._save_json()
                 self._refresh_grid_view()
+                self._update_state_combo()
                 if self.view_mode == "Single" and self.current_state_key == state_key:
                     self.update_preview()
 
@@ -1044,6 +1101,7 @@ class EditorPanelFrame(ctk.CTkFrame):
                     print(f"Error auto-fitting: {e}")
 
             self._save_json()
+            self._update_state_combo()
             self.update_preview()
 
     def update_preview(self):
@@ -1051,6 +1109,10 @@ class EditorPanelFrame(ctk.CTkFrame):
             return
             
         if self.view_mode == "Grid":
+            return
+            
+        # Suppress updates during loading/batch updates
+        if getattr(self, 'is_loading', False):
             return
 
         states = self.current_face.get('states', {})
@@ -1112,7 +1174,12 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         source_uuid = state_data.get('source_uuid')
         if not source_uuid:
-            self.lbl_preview.configure(image=None, text="No Image Source")
+            # Explicitly clear icons with empty string (tk.Label standard)
+            self.lbl_preview.configure(image="", text="No Image Source")
+            self.lbl_icon_a.configure(image="")
+            self.lbl_icon_b.configure(image="")
+            self.lbl_icon_a.update_idletasks() # Force update
+            
             self.current_image = None
             return
             
@@ -1120,6 +1187,8 @@ class EditorPanelFrame(ctk.CTkFrame):
         if not source_path:
             try:
                 self.lbl_preview.configure(image=None, text=loc.get("no_image_source"))
+                self.lbl_icon_a.configure(image=None)
+                self.lbl_icon_b.configure(image=None)
             except:
                 pass
             self.current_image = None
@@ -1163,7 +1232,7 @@ class EditorPanelFrame(ctk.CTkFrame):
         )
         
         if processed_img:
-            # --- Icon Preview (Generate BEFORE drawing guides) ---
+            # --- Icon Preview (Generate BEFORE Game UI & Guides) ---
             icon_scale_a = state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0))
             icon_scale_b = state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0))
             
@@ -1175,11 +1244,43 @@ class EditorPanelFrame(ctk.CTkFrame):
             icon_a = self.image_processor.create_face_icon(processed_img, (96, 96), fc_dict, icon_scale_a)
             icon_b = self.image_processor.create_face_icon(processed_img, (270, 96), fc_dict, icon_scale_b)
             
-            ctk_icon_a = ctk.CTkImage(light_image=icon_a, dark_image=icon_a, size=(96, 96))
-            ctk_icon_b = ctk.CTkImage(light_image=icon_b, dark_image=icon_b, size=(270, 96))
+            # Use ImageTk.PhotoImage for robustness
+            photo_icon_a = ImageTk.PhotoImage(icon_a)
+            photo_icon_b = ImageTk.PhotoImage(icon_b)
             
-            self.lbl_icon_a.configure(image=ctk_icon_a)
-            self.lbl_icon_b.configure(image=ctk_icon_b)
+            # Keep references!
+            self.current_icon_a = photo_icon_a
+            self.current_icon_b = photo_icon_b
+            
+            self.lbl_icon_a.configure(image=photo_icon_a, text="")
+            self.lbl_icon_b.configure(image=photo_icon_b, text="")
+            self.lbl_icon_a.update_idletasks() # Force update
+
+            # --- Game UI Background (Composite for Main Preview ONLY) ---
+            if self.switch_game_ui.get():
+                try:
+                    bg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "assets", "preview_bg.png")
+                    if os.path.exists(bg_path):
+                        bg_img = Image.open(bg_path).convert("RGBA")
+                        if bg_img.size != (1920, 1080):
+                            bg_img = bg_img.resize((1920, 1080), Image.Resampling.LANCZOS)
+                        
+                        # Composite character ON TOP of background
+                        # processed_img is the character (RGBA)
+                        # Create a copy for display so we don't modify the original processed_img used for icons/saving?
+                        # Actually processed_img is a fresh copy from image_processor usually.
+                        # But we already used it for icons.
+                        # Let's use a copy for display to be safe, or just overwrite if we don't need clean anymore.
+                        # We need clean for coordinate calc? No, coordinate calc uses current_pil_image.
+                        # So we should update current_pil_image to be the composited one?
+                        # No, coordinate calc (face center) should be relative to the CHARACTER image, not the UI.
+                        # But if we show UI, the user clicks on the UI.
+                        # If UI is 1920x1080 and Character is 1920x1080, it matches.
+                        
+                        bg_img.alpha_composite(processed_img)
+                        processed_img = bg_img
+                except Exception as e:
+                    print(f"Error loading game UI background: {e}")
 
             # Draw Guides (AFTER icon generation so icons are clean)
             if self.show_guides:
@@ -1204,23 +1305,21 @@ class EditorPanelFrame(ctk.CTkFrame):
                 zh = int(new_h * self.view_zoom)
                 display_img = display_img.resize((zw, zh), Image.Resampling.NEAREST)
                 
-            ctk_img = ctk.CTkImage(light_image=display_img, dark_image=display_img, size=(display_img.width, display_img.height))
+            # Create Image (Use ImageTk.PhotoImage for tk.Label)
             try:
-                self.lbl_preview.configure(image=ctk_img, text="")
+                # Explicitly clear previous image
+                self.lbl_preview.configure(image=None)
+                
+                # Create PhotoImage
+                photo_img = ImageTk.PhotoImage(display_img)
+                
+                self.current_image = photo_img # Keep reference
+                self.current_pil_image = processed_img # Keep original for coordinate calc
+                
+                self.lbl_preview.configure(image=photo_img, text="")
             except Exception as e:
                 print(f"Warning: Failed to update preview image: {e}")
-                
-            self.current_image = ctk_img
-            self.current_pil_image = processed_img # Keep original for coordinate calc
-            
-        else:
-            try:
                 self.lbl_preview.configure(image=None, text=loc.get("error_processing"))
-                self.lbl_icon_a.configure(image=None)
-                self.lbl_icon_b.configure(image=None)
-            except:
-                pass
-            self.current_image = None
 
     def _draw_guides(self, image):
         draw = ImageDraw.Draw(image)
@@ -1350,63 +1449,6 @@ class EditorPanelFrame(ctk.CTkFrame):
                 else:
                     # Cancel -> Revert Checkbox
                     self.chk_individual_mode.select()
-            else:
-                # Case B: No Defaults -> Set Current as Global
-                from tkinter import messagebox
-                messagebox.showinfo("Info", loc.get("msg_set_global"))
-                
-                # Create defaults from current state
-                self.current_face['defaults'] = {
-                    'scale': self.slider_scale.get(),
-                    'offset_x': int(self.slider_x.get()),
-                    'offset_y': int(self.slider_y.get()),
-                    'use_rembg': bool(self.switch_rembg.get()),
-                    'alpha_matting': bool(self.switch_alpha.get()),
-                    'alpha_matting_foreground_threshold': int(self.slider_fg_thresh.get()),
-                    'alpha_matting_background_threshold': int(self.slider_bg_thresh.get()),
-                    'alpha_matting_erode_size': int(self.slider_erode.get())
-                }
-                self.update_preview() # Trigger sync
-        else:
-            # Transition: Global -> Local
-            # Just switch mode, current settings become local starting point
-            pass
-
-    def _apply_settings(self, settings):
-        """Helper to apply settings to UI controls"""
-        self.slider_scale.set(settings.get('scale', 1.0))
-        self.slider_x.set(settings.get('offset_x', 0))
-        self.slider_y.set(settings.get('offset_y', 0))
-        
-        if settings.get('use_rembg'):
-            self.switch_rembg.select()
-        else:
-            self.switch_rembg.deselect()
-            
-        if settings.get('alpha_matting'):
-            self.switch_alpha.select()
-        else:
-            self.switch_alpha.deselect()
-            
-        self.slider_fg_thresh.set(settings.get('alpha_matting_foreground_threshold', 240))
-        self.slider_bg_thresh.set(settings.get('alpha_matting_background_threshold', 10))
-        self.slider_erode.set(settings.get('alpha_matting_erode_size', 10))
-
-    def on_preview_click(self, event):
-        if not self.current_face or not hasattr(self, 'current_pil_image'):
-            return
-            
-        if not self.current_image: return
-        
-        # Image dimensions (resized)
-        img_w, img_h = self.current_image._size
-        
-        # Since we resized the label to match the image, event.x/y are relative to the image top-left.
-        click_x = event.x
-        click_y = event.y
-        
-        # Check if click is within image bounds (should be, but safety check)
-        if click_x < 0 or click_x > img_w or click_y < 0 or click_y > img_h:
             return
         
         # Scale back to original resolution (1920x1080)
