@@ -17,6 +17,7 @@
     "image_not_found": "画像が見つかりません",
     "error_processing": "処理エラー",
     "saved_to": "保存しました: {}",
+    "open_folder": "Faceフォルダを開く",
     "delete": "削除",
     "confirm_delete": "このキャラクターを削除しますか？",
     "states": {

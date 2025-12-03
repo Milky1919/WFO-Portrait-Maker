@@ -17,6 +17,7 @@
     "image_not_found": "Image Not Found",
     "error_processing": "Error Processing",
     "saved_to": "Saved character to {}",
+    "open_folder": "Open Face Folder",
     "delete": "Delete",
     "confirm_delete": "Are you sure you want to delete this character?",
     "states": {

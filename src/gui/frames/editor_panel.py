@@ -120,6 +120,10 @@ class EditorPanelFrame(ctk.CTkFrame):
 
     def load_character(self, face_data):
         self.current_face = face_data
+        if not face_data:
+            self.show_editor(False)
+            return
+            
         self.show_editor(True) # Show editor
         self.entry_name.delete(0, "end")
         self.entry_name.insert(0, face_data.get('display_name', ''))
