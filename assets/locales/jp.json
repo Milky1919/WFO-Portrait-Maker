@@ -21,6 +21,18 @@
     "icon_scale": "アイコン拡大率",
     "icon_scale_a": "アイコンA倍率",
     "icon_scale_b": "アイコンB倍率",
+    "copy": "コピー",
+    "paste": "貼り付け",
+    "merge": "マージ",
+    "delete": "削除",
+    "confirm_delete": "本当に削除しますか？",
+    "saving": "保存中...",
+    "saved": "保存しました！",
+    "error_delete_failed": "キャラクターの削除に失敗しました。",
+    "confirm_apply_all": "現在の設定をすべての状態に適用しますか？",
+    "individual_adjust": "個別調整",
+    "show_game_ui": "ゲームUIを表示",
+    "enable": "有効",
     "error": {
         "no_face_center": "顔中心位置が設定されていません！"
     },

@@ -21,6 +21,18 @@
     "icon_scale": "Icon Scale",
     "icon_scale_a": "Icon A Scale",
     "icon_scale_b": "Icon B Scale",
+    "copy": "Copy",
+    "paste": "Paste",
+    "merge": "Merge",
+    "delete": "Delete",
+    "confirm_delete": "Are you sure you want to delete this character?",
+    "saving": "Saving...",
+    "saved": "Saved!",
+    "error_delete_failed": "Failed to delete character.",
+    "confirm_apply_all": "Apply current settings to ALL states?",
+    "individual_adjust": "Individual Adjust",
+    "show_game_ui": "Show Game UI",
+    "enable": "Enable",
     "error": {
         "no_face_center": "Face center not set!"
     },

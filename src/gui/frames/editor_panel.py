@@ -11,6 +11,8 @@ from gui.dialogs.progress_dialog import ProgressDialog
 from core.localization import loc
 from core.rembg_downloader import RembgDownloader
 import threading
+from core.logger import Logger
+import traceback
 
 class LoadingOverlay(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
@@ -30,12 +32,22 @@ class LoadingOverlay(ctk.CTkFrame):
         self.lift() # Ensure on top
         
     def show(self):
+        Logger.info("LoadingOverlay.show called")
         self.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.spinner.start()
         self.lift()
+        # Explicitly lift above siblings if possible
+        try:
+            if hasattr(self.master, 'right_panel'):
+                self.lift(self.master.right_panel)
+            if hasattr(self.master, 'preview_container'):
+                self.lift(self.master.preview_container)
+        except:
+            pass
         self.update_idletasks() # Force render
         
     def hide(self):
+        Logger.info("LoadingOverlay.hide called")
         self.place_forget()
         self.spinner.stop()
 
@@ -51,15 +63,18 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.view_mode = "Grid" # Default Grid
         self.grid_images = [] # Keep references to grid images
         self.grid_widgets = [] # Keep references to grid widgets for clearing
-        self.last_grid_width = 0 # For debounce
+        self.last_window_width = 0 # For resize debounce
+        self.ignore_slider_event = False # Flag to prevent loop
         
         # Caching for Performance
         self.cached_processed_image = None
         self.cache_key = None # (source_uuid, use_rembg, alpha, fg, bg, erode)
         
-        self.guides_data = self._load_guides()
-        self.show_guides = True # Default ON
-        self.guide_type = "face_c" # face_c or face_d
+        self.cached_clean_image = None
+        self.clean_cache_key = None # (cache_key, scale, offset_x, offset_y, face_center)
+        
+        self.cached_composited_image = None # Deprecated/Removed in favor of clean cache + dynamic UI
+        self.composited_cache_key = None
         
         self.pin_mode = "Global" # Global or Local
         
@@ -93,11 +108,12 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.btn_view_grid = ctk.CTkButton(self.view_mode_frame, text=loc.get("grid_view"), width=100, command=lambda: self.set_view_mode("Grid"))
         self.btn_view_grid.pack(side="left", padx=5)
         
-        # Grid Zoom Slider
-        self.slider_grid_zoom = ctk.CTkSlider(self.view_mode_frame, from_=50, to=500, width=150, command=self._update_grid_zoom)
-        self.slider_grid_zoom.set(100) # Default size
-        self.slider_grid_zoom.pack(side="right", padx=10)
-        ctk.CTkLabel(self.view_mode_frame, text="Thumbnail Size").pack(side="right", padx=5)
+        # Zoom Slider (Shared for Grid and Single View)
+        self.slider_zoom = ctk.CTkSlider(self.view_mode_frame, from_=0.1, to=5.0, width=150, command=self._on_zoom_slider_change)
+        self.slider_zoom.set(1.0) 
+        self.slider_zoom.pack(side="right", padx=10)
+        self.lbl_zoom = ctk.CTkLabel(self.view_mode_frame, text="Zoom")
+        self.lbl_zoom.pack(side="right", padx=5)
         
         # Single View Frame
         self.preview_frame = ctk.CTkFrame(self.preview_container)
@@ -133,13 +149,21 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         self.grid_resize_timer = None
         
-        # Controls Area
-        self.controls_frame = ctk.CTkScrollableFrame(self, width=350, label_text=loc.get("edit"))
-        self.controls_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+        # Right Panel (Container for Save, Controls, Delete)
+        self.right_panel = ctk.CTkFrame(self, fg_color="transparent")
+        self.right_panel.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=5, pady=5)
         
-        # Delete Button (Outside scrollable frame, at bottom right)
-        self.btn_delete = ctk.CTkButton(self, text=loc.get("delete"), fg_color="red", hover_color="darkred", command=self.delete_character)
-        self.btn_delete.grid(row=1, column=1, sticky="ew", padx=10, pady=10)
+        # Save Button (Floating at Top)
+        self.btn_save = ctk.CTkButton(self.right_panel, text=loc.get("save_export"), fg_color="green", command=self.save_character)
+        self.btn_save.pack(fill="x", padx=5, pady=(0, 5))
+        
+        # Controls Area (Scrollable)
+        self.controls_frame = ctk.CTkScrollableFrame(self.right_panel, width=350, label_text=loc.get("edit"))
+        self.controls_frame.pack(fill="both", expand=True, padx=0, pady=5)
+        
+        # Delete Button (Floating at Bottom)
+        self.btn_delete = ctk.CTkButton(self.right_panel, text=loc.get("delete"), fg_color="red", hover_color="darkred", command=self.delete_character)
+        self.btn_delete.pack(fill="x", padx=5, pady=(5, 0))
         
         self._init_controls()
         
@@ -158,6 +182,9 @@ class EditorPanelFrame(ctk.CTkFrame):
         # Initially hide editor
         self.show_editor(False)
 
+    def set_on_update(self, callback):
+        self.on_update_callback = callback
+
     def clear_editor(self):
         """Resets the editor state and clears image references to prevent TclError."""
         self.current_face = None
@@ -166,6 +193,9 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         self.cached_processed_image = None
         self.cache_key = None
+        
+        self.cached_clean_image = None
+        self.clean_cache_key = None
         
         self.view_pan_x = 0
         self.view_pan_y = 0
@@ -193,14 +223,12 @@ class EditorPanelFrame(ctk.CTkFrame):
         if show:
             self.lbl_empty.grid_remove()
             self.preview_container.grid() # Show container
-            self.controls_frame.grid()
-            self.btn_delete.grid()
+            self.right_panel.grid() # Show right panel
             # Ensure correct view mode is shown
             self.set_view_mode(self.view_mode)
         else:
             self.preview_container.grid_remove()
-            self.controls_frame.grid_remove()
-            self.btn_delete.grid_remove()
+            self.right_panel.grid_remove()
             self.lbl_empty.grid()
 
     def _init_controls(self):
@@ -210,45 +238,25 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.btn_update_name = ctk.CTkButton(self.controls_frame, text=loc.get("update_name"), command=self.update_name)
         self.btn_update_name.pack(fill="x", padx=10, pady=5)
         
-        # State Selector
+        # State Selector (Grid Buttons)
         self.lbl_state = ctk.CTkLabel(self.controls_frame, text=loc.get("state"))
         self.lbl_state.pack(anchor="w", padx=10)
         
-        # Map display names to keys for combo box
-        self.state_map = {
-            loc.get("states.normal"): "normal",
-            loc.get("states.poison"): "poison",
-            loc.get("states.hp_75"): "hp_75",
-            loc.get("states.hp_50"): "hp_50",
-            loc.get("states.hp_25"): "hp_25",
-            loc.get("states.dead"): "dead",
-            loc.get("states.afraid"): "afraid",
-            loc.get("states.sleep"): "sleep",
-            loc.get("states.paralyzed"): "paralyzed",
-            loc.get("states.stoned"): "stoned",
-            loc.get("states.ashed"): "ashed"
-        }
-        self.combo_state = ctk.CTkComboBox(self.controls_frame, values=list(self.state_map.keys()), command=self.change_state_from_combo)
-        self.combo_state.set(loc.get("states.normal"))
-        self.combo_state.pack(fill="x", padx=10, pady=5)
+        self.state_buttons_frame = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
+        self.state_buttons_frame.pack(fill="x", padx=5, pady=5)
         
-        # Frame Selection
-        self.frame_container = ctk.CTkFrame(self.controls_frame)
-        self.frame_container.pack(fill="x", padx=10, pady=5)
+        # Define states order
+        self.state_keys = [
+            "normal", "poison", "hp_75",
+            "hp_50", "hp_25", "dead",
+            "afraid", "sleep", "paralyzed",
+            "stoned", "ashed"
+        ]
         
-        self.lbl_frame = ctk.CTkLabel(self.frame_container, text="Frame")
-        self.lbl_frame.pack(anchor="w", padx=5)
+        self.state_buttons = {}
+        # Buttons will be created dynamically in _update_state_buttons
         
-        self.combo_frame = ctk.CTkComboBox(self.frame_container, command=self.change_frame)
-        self.combo_frame.pack(fill="x", padx=5, pady=5)
-        
-        # Register D&D for frame container
-        try:
-            from tkinterdnd2 import DND_FILES
-            self.frame_container.drop_target_register(DND_FILES)
-            self.frame_container.dnd_bind('<<Drop>>', self.on_drop_frame)
-        except:
-            pass
+
 
         # Image Source
         self.btn_import = ctk.CTkButton(self.controls_frame, text=loc.get("import_image"), command=self.import_image)
@@ -281,13 +289,11 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.chk_individual_mode = ctk.CTkSwitch(self.pin_mode_frame, text=loc.get("individual_adjust"), command=self.toggle_individual_mode)
         self.chk_individual_mode.pack(side="left", padx=10)
         
-        # Guide Controls
-        self.guide_frame = ctk.CTkFrame(self.controls_frame)
-        self.guide_frame.pack(fill="x", padx=10, pady=5)
-        self.switch_guide = ctk.CTkSwitch(self.guide_frame, text=loc.get("show_guides"), command=self.toggle_guides)
-        self.switch_guide.pack(side="left", padx=10)
+        # UI Options
+        self.ui_options_frame = ctk.CTkFrame(self.controls_frame)
+        self.ui_options_frame.pack(fill="x", padx=10, pady=5)
         
-        self.switch_game_ui = ctk.CTkSwitch(self.guide_frame, text=loc.get("show_game_ui"), command=self.update_preview)
+        self.switch_game_ui = ctk.CTkSwitch(self.ui_options_frame, text=loc.get("show_game_ui"), command=self.update_preview)
         self.switch_game_ui.pack(side="left", padx=10)
         
         # RemBG Controls
@@ -345,9 +351,7 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.lbl_icon_a = tk.Label(self.frame_icon_a, bg="gray20")
         self.lbl_icon_a.pack(padx=2, pady=2)
         
-        # Save
-        self.btn_save = ctk.CTkButton(self.controls_frame, text=loc.get("save_export"), fg_color="green", command=self.save_character)
-        self.btn_save.pack(fill="x", padx=10, pady=20)
+
 
     def _create_slider(self, label, from_, to, default):
         frame = ctk.CTkFrame(self.controls_frame)
@@ -419,382 +423,60 @@ class EditorPanelFrame(ctk.CTkFrame):
         slider.pack(side="right", fill="x", expand=True, padx=5)
         return slider
 
-    def _check_rembg_model(self):
-        if RembgDownloader.is_model_installed():
-            self.btn_download_model.pack_forget()
-            self.switch_rembg.pack(side="left", padx=5)
-        else:
-            self.switch_rembg.pack_forget()
-            self.btn_download_model.pack(fill="x", padx=5)
-            
-    def download_model(self):
-        # Progress Dialog
-        self.dl_progress = ProgressDialog(self, title="Downloading Model", message="Downloading u2net.onnx...")
-        self.dl_cancel_event = threading.Event()
+    def _update_state_buttons(self):
+        # Clear existing
+        for btn in self.state_buttons.values():
+            btn.destroy()
+        self.state_buttons.clear()
         
-        # Add Cancel Button to Progress Dialog (Hack: Accessing internal widget)
-        # Ideally ProgressDialog should support cancellation natively.
-        # For now, let's just use the close button or add a button if possible.
-        # Since ProgressDialog is modal, we need to modify it or use a custom one.
-        # Let's assume we can add a cancel button to it or it has one.
-        # Checking ProgressDialog implementation... it's simple.
-        # Let's just add a cancel button here if we can access the window.
-        btn_cancel = ctk.CTkButton(self.dl_progress.window, text="Cancel", fg_color="red", command=self._cancel_download)
-        btn_cancel.pack(pady=10)
-        
-        downloader = RembgDownloader()
-        downloader.download_model(
-            progress_callback=self.dl_progress.set_progress,
-            cancel_event=self.dl_cancel_event,
-            on_complete=self._on_download_complete
-        )
-        
-    def _cancel_download(self):
-        self.dl_cancel_event.set()
-        
-    def _on_download_complete(self, success):
-        self.dl_progress.close()
-        if success:
-            self.after(0, self._check_rembg_model)
-            from tkinter import messagebox
-            messagebox.showinfo("Success", "Model downloaded successfully.")
-        else:
-            if not self.dl_cancel_event.is_set():
-                from tkinter import messagebox
-                messagebox.showerror("Error", "Download failed.")
-
-    def toggle_rembg(self):
-        if self.switch_rembg.get():
-            self.rembg_settings_frame.pack(fill="x", padx=5, pady=5)
-        else:
-            self.rembg_settings_frame.pack_forget()
-        self.update_preview()
-
-    def _load_guides(self):
-        try:
-            path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "assets", "guides.json")
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception as e:
-            print(f"Error loading guides: {e}")
-        return {}
-
-    def set_view_mode(self, mode):
-        self.view_mode = mode
-        if mode == "Single":
-            self.grid_view_frame.pack_forget()
-            self.preview_frame.pack(expand=True, fill="both")
-        else:
-            self.preview_frame.pack_forget()
-            self.grid_view_frame.pack(expand=True, fill="both")
-            self._refresh_grid_view()
-            
-        # Force layout update to prevent glitch
-        self.update_idletasks()
-        self.update_preview()
-
-    def toggle_guides(self):
-        self.show_guides = bool(self.switch_guide.get())
-        self.update_preview()
-
-    def change_guide_type(self, value):
-        self.guide_type = value
-        self.update_preview()
-
-    def copy_from_normal(self):
-        if not self.current_face or self.current_state_key == "normal": return
-        states = self.current_face.get('states', {})
-        normal_state = states.get('normal')
-        if not normal_state: return
-        
-        # Copy values
-        self.face_manager.push_update_state(self.current_face) # Undo snapshot
-        
-        current_state = states.get(self.current_state_key, {})
-        current_state['scale'] = normal_state.get('scale', 1.0)
-        current_state['offset_x'] = normal_state.get('offset_x', 0)
-        current_state['offset_y'] = normal_state.get('offset_y', 0)
-        current_state['use_rembg'] = normal_state.get('use_rembg', False)
-        
-        # Ensure state exists
-        states[self.current_state_key] = current_state
-        self._save_json()
-        self.change_state(self.current_state_key) # Refresh UI
-
-    def apply_to_all(self):
-        if not self.current_face: return
-        states = self.current_face.get('states', {})
-        current_state = states.get(self.current_state_key)
-        if not current_state: return
-        
-        from tkinter import messagebox
-        if not messagebox.askyesno("Confirm", loc.get("confirm_apply_all")):
-            return
-            
-        self.face_manager.push_update_state(self.current_face) # Undo snapshot
-            
-        for key in self.state_map.values():
-            if key == self.current_state_key: continue
-            if key not in states: states[key] = {}
-            
-            s = states[key]
-            s['scale'] = current_state.get('scale', 1.0)
-            s['offset_x'] = current_state.get('offset_x', 0)
-            s['offset_y'] = current_state.get('offset_y', 0)
-            s['use_rembg'] = current_state.get('use_rembg', False)
-            # Source UUID is NOT copied usually, as states might have different images
-            
-        self._save_json()
-        from core.logger import Logger
-        Logger.info(f"Applied settings to all states for {self.current_face.get('display_name')}")
-
-    def _on_grid_configure(self, event):
-        new_width = self.grid_view_frame.winfo_width()
-        # Ignore small changes (e.g. scrollbar appearance) to prevent loops
-        if abs(new_width - self.last_grid_width) < 20: 
-            return
-            
-        self.last_grid_width = new_width
-        
-        if self.grid_resize_timer:
-            self.after_cancel(self.grid_resize_timer)
-        self.grid_resize_timer = self.after(200, self._refresh_grid_view)
-
-    def _update_grid_zoom(self, value):
-        # Debounce or just update?
-        # For smooth resizing, we might need to just update size if images are already loaded?
-        # Or re-render?
-        # Re-rendering everything might be slow.
-        # But CTkImage supports size change? No, need to create new CTkImage.
-        # Let's just call refresh for now, maybe optimize later.
-        self._refresh_grid_view()
-
-    def _refresh_grid_view(self):
-        # Clear
-        self.grid_images.clear() # Clear references
-        for w in self.grid_widgets:
-            w.destroy()
-        self.grid_widgets.clear()
-            
         if not self.current_face: return
         
-        # Grid Settings
-        thumb_size = int(self.slider_grid_zoom.get())
-        max_cols = max(1, int(self.grid_view_frame.winfo_width() / (thumb_size + 20)))
-        if max_cols < 1: max_cols = 4 # Fallback
-        
-        row = 0
-        col = 0
-        
         states = self.current_face.get('states', {})
         
-        for name, key in self.state_map.items():
-            state_data = states.get(key)
-            
-            frame = ctk.CTkFrame(self.grid_view_frame)
-            frame.grid(row=row, column=col, padx=5, pady=5)
-            self.grid_widgets.append(frame)
-            
-            # DnD for specific cell
-            try:
-                from tkinterdnd2 import DND_FILES
-                frame.drop_target_register(DND_FILES)
-                frame.dnd_bind('<<Drop>>', lambda e, k=key: self.on_drop_grid_cell(e, k))
-            except:
-                pass
-            
-            lbl_name = ctk.CTkLabel(frame, text=name)
-            lbl_name.pack()
-            
-            # Thumbnail Image
-            img_widget = None
-            if state_data:
-                source_uuid = state_data.get('source_uuid')
-                if source_uuid:
-                    source_path = self.face_manager.get_source_path(self.current_face, source_uuid)
-                    if source_path and os.path.exists(source_path):
-                        try:
-                            # Load and resize for thumbnail
-                            pil_img = Image.open(source_path)
-                            pil_img.thumbnail((thumb_size, thumb_size))
-                            ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=pil_img.size)
-                            self.grid_images.append(ctk_img) # Keep reference
-                            img_widget = ctk_img
-                        except:
-                            pass
-            
-            # Button with Image or Text
-            if img_widget:
-                btn = ctk.CTkButton(frame, text="", image=img_widget, width=thumb_size, height=thumb_size, command=lambda k=key: self._grid_click(k))
+        # Determine which states have data (for visual feedback)
+        # User request: Hide empty states instead of graying them out.
+        # Always show "normal".
+        
+        visible_keys = []
+        for key in self.state_keys:
+            if key == "normal":
+                visible_keys.append(key)
             else:
-                btn = ctk.CTkButton(frame, text="No Image", width=thumb_size, height=thumb_size, command=lambda k=key: self._grid_click(k))
-                
-            btn.pack(pady=2)
+                # Check if state has data
+                state_data = states.get(key)
+                if state_data and (state_data.get('source_uuid') or state_data.get('image_path')):
+                    visible_keys.append(key)
+        
+        # Create buttons for visible keys
+        for i, key in enumerate(visible_keys):
+            row = i // 3
+            col = i % 3
             
-            # Bind DnD to button too
-            try:
-                btn.drop_target_register(DND_FILES)
-                btn.dnd_bind('<<Drop>>', lambda e, k=key: self.on_drop_grid_cell(e, k))
-            except:
-                pass
+            btn = ctk.CTkButton(
+                self.state_buttons_frame, 
+                text=loc.get(f"states.{key}"), 
+                font=("Arial", 11),
+                width=80,
+                height=28,
+                fg_color="gray40", # Default inactive
+                command=lambda k=key: self.change_state(k)
+            )
             
-            col += 1
-            if col >= max_cols:
-                col = 0
-                row += 1
-                
-        # Bind DnD to the main grid frame for Batch Import
-        try:
-            self.grid_view_frame.drop_target_register(DND_FILES)
-            self.grid_view_frame.dnd_bind('<<Drop>>', self.on_drop_batch)
-        except:
-            pass
-
-    def _grid_click(self, state_key):
-        self.combo_state.set(list(self.state_map.keys())[list(self.state_map.values()).index(state_key)])
-        self.change_state(state_key)
-        self.set_view_mode("Single")
-
-
-    def set_on_update(self, callback):
-        self.on_update_callback = callback
-
-    def _update_state_combo(self):
-        if not self.current_face: return
-        
-        states = self.current_face.get('states', {})
-        available_keys = []
-        
-        # Always include current state (to prevent lock-out)
-        available_keys.append(self.current_state_key)
-        
-        # Include states that have a source_uuid
-        for key in self.state_map.values():
-            if key == self.current_state_key: continue
-            
-            state_data = states.get(key)
-            if state_data and state_data.get('source_uuid'):
-                available_keys.append(key)
-                
-        # Sort based on original map order
-        ordered_keys = []
-        for key in self.state_map.values():
-            if key in available_keys:
-                ordered_keys.append(key)
-                
-        # Map back to display names
-        display_values = []
-        for key in ordered_keys:
-            # Find name for key
-            for name, k in self.state_map.items():
-                if k == key:
-                    display_values.append(name)
-                    break
-                    
-        self.combo_state.configure(values=display_values)
-        
-        # Ensure current selection is valid
-        current_name = ""
-        for name, k in self.state_map.items():
-            if k == self.current_state_key:
-                current_name = name
-                break
-        self.combo_state.set(current_name)
-
-        # Show Editor (Triggers update_preview)
-        self.show_editor(True)
-        
-        # Hide loading overlay
-        self.loading_overlay.hide()
-
-    def load_character(self, face_data):
-        # Show loading overlay
-        self.loading_overlay.show()
-        
-        # Use after(10) to allow UI to render the overlay before heavy lifting
-        # Use after(10) to allow UI to render the overlay before heavy lifting
-        self.after(10, lambda: self._load_character_internal(face_data))
-        
-    def _load_character_internal(self, face_data):
-        self.is_loading = True
-        try:
-            # Save previous character if exists
-            if self.current_face:
-                self._save_json()
-                
-            # Clear previous state to avoid TclError
-            self.clear_editor()
-                
-            if not face_data:
-                return
-
-            # Initialize if not managed
-            status = face_data.get('_status', 'managed')
-            if status != 'managed':
-                # Initialize it
-                face_data = self.face_manager.initialize_face(face_data)
-                if not face_data:
-                    # Failed to init
-                    return
-                # Notify list to update status (e.g. remove "Empty" tag)
-                if self.on_update_callback:
-                    self.on_update_callback(face_data)
-
-            self.current_face = face_data
-                
-            # Load Settings FIRST (Before showing editor/preview)
-            self.entry_name.delete(0, "end")
-            self.entry_name.insert(0, face_data.get('display_name', ''))
-            self.change_state("normal", save_before_switch=False) # Reset to normal on load
-            self._update_state_combo()
-            
-            # Load Frames
-            frames = ["None"] + self.face_manager.scan_frames()
-            self.combo_frame.configure(values=frames)
-            current_frame = face_data.get('frame_id', "None")
-            if current_frame not in frames:
-                current_frame = "None"
-            self.combo_frame.set(current_frame)
-            
-            # Load Face Center
-            fc = face_data.get('face_center')
-            if fc:
-                self.spin_fc_x.delete(0, "end")
-                self.spin_fc_x.insert(0, str(fc.get('x', 0)))
-                self.spin_fc_y.delete(0, "end")
-                self.spin_fc_y.insert(0, str(fc.get('y', 0)))
+            # Highlight
+            if key == self.current_state_key:
+                btn.configure(fg_color="#1F6AA5")
             else:
-                self.spin_fc_x.delete(0, "end")
-                self.spin_fc_y.delete(0, "end")
-
-            # Show Editor
-            self.show_editor(True)
-            
-        finally:
-            self.is_loading = False
-            self.loading_overlay.hide()
-            # Schedule update to allow UI to settle and prevent TclError
-            self.after(200, self.update_preview)
-
-    def change_frame(self, selected_frame):
-        if not self.current_face:
-            return
-        
-        if selected_frame == "None":
-            self.face_manager.push_update_state(self.current_face) # Undo snapshot
-            self.current_face['frame_id'] = None
-        else:
-            self.face_manager.push_update_state(self.current_face) # Undo snapshot
-            self.current_face['frame_id'] = selected_frame
-            
-        self._save_json()
-        self.update_preview()
-
-    def change_state_from_combo(self, selected_value):
-        state_key = self.state_map.get(selected_value)
-        if state_key:
-            self.change_state(state_key)
+                # It's visible, so it has data (or is normal)
+                # If it's normal and empty, it might be gray30, but we want to show it.
+                # If it has data, gray50.
+                if key in states and (states[key].get('source_uuid') or states[key].get('image_path')):
+                    btn.configure(fg_color="gray50")
+                else:
+                    btn.configure(fg_color="gray30")
+                
+            btn.grid(row=row, column=col, padx=2, pady=2, sticky="ew")
+            self.state_buttons_frame.grid_columnconfigure(col, weight=1)
+            self.state_buttons[key] = btn
 
     def change_state(self, state_key, save_before_switch=True):
         # Save previous state before switching
@@ -807,6 +489,41 @@ class EditorPanelFrame(ctk.CTkFrame):
             
         states = self.current_face.get('states', {})
         state_data = states.get(state_key, {})
+        
+        # 1. Update Individual Adjust Mode Switch
+        is_individual = state_data.get('is_individual', False)
+        if is_individual:
+            self.chk_individual_mode.select()
+            self.lbl_individual_indicator.place(x=10, y=10)
+            self.lbl_individual_indicator.lift()
+        else:
+            self.chk_individual_mode.deselect()
+            self.lbl_individual_indicator.place_forget()
+            
+        # 2. Load Settings (Sliders)
+        self.slider_scale.set(state_data.get('scale', 1.0))
+        self.slider_x.set(state_data.get('offset_x', 0))
+        self.slider_y.set(state_data.get('offset_y', 0))
+        
+        # Icon Scales
+        self.slider_icon_scale_a.set(state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0)))
+        self.slider_icon_scale_b.set(state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0)))
+        
+        # RemBG Settings
+        if state_data.get('use_rembg', False):
+            self.switch_rembg.select()
+            self.rembg_settings_frame.pack(fill="x", padx=5, pady=5)
+        else:
+            self.switch_rembg.deselect()
+            self.rembg_settings_frame.pack_forget()
+            
+        self.switch_alpha.deselect()
+        if state_data.get('alpha_matting', False):
+            self.switch_alpha.select()
+            
+        self.slider_fg_thresh.set(state_data.get('alpha_matting_foreground_threshold', 240))
+        self.slider_bg_thresh.set(state_data.get('alpha_matting_background_threshold', 10))
+        self.slider_erode.set(state_data.get('alpha_matting_erode_size', 10))
         
         # Load Face Center
         face_center = state_data.get('face_center')
@@ -824,6 +541,9 @@ class EditorPanelFrame(ctk.CTkFrame):
         else:
             self.spin_fc_x.delete(0, "end")
             self.spin_fc_y.delete(0, "end")
+            
+        # Update Button Highlights
+        self._update_state_buttons()
         
         self.update_preview()
 
@@ -880,7 +600,6 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         # Validation
         valid_files = []
-        invalid_files = []
         
         for f in files:
             if not os.path.isfile(f): continue
@@ -895,91 +614,8 @@ class EditorPanelFrame(ctk.CTkFrame):
                     break
             
             if not matched:
-                # If no suffix, assume Normal
-                # But wait, user said "If not setting rule, show dialog"
-                # "Single file registration is allowed regardless of filename"
-                # "If batch DnD, validate"
-                
-                if len(files) == 1:
-                    # Single file -> Treat as Normal or ask?
-                    # User said: "Single file registration ... regardless of filename"
-                    # If dropped on grid background (batch area), maybe default to Normal?
-                    valid_files.append((f, "normal"))
-                else:
-                    # Batch -> Must match rule?
-                    # "If suffix is at end ... allow batch registration"
-                    # "If not matching ... show dialog and cancel"
-                    
-                    # Check if it's a "Normal" file (no suffix from list)
-                    # Is "Normal" allowed in batch?
-                    # User list showed: "1 Normal ... face_b.png" (No suffix)
-                    # So "No suffix" = Normal.
-                    
-                    # We need to ensure it DOESN'T match any other suffix?
-                    # We already checked suffixes.
-                    # So if not matched, it's Normal.
-                    valid_files.append((f, "normal"))
+                valid_files.append((f, "normal"))
 
-        # Wait, user said: "If not matching ... show dialog"
-        # "Limit batch registration to when these suffixes ... are at the end"
-        # This implies ONLY files with suffixes (or explicit Normal?) are allowed?
-        # "1 Normal ... face_b.png" -> No suffix.
-        # So Normal is allowed.
-        
-        # Re-reading: "Limit batch registration to when these suffixes ... are at the end"
-        # "Final output should be as per spec"
-        # "If not matching ... show dialog"
-        
-        # Let's assume:
-        # If filename ends with _XX -> Mapped to XX.
-        # If filename DOES NOT end with _XX -> Mapped to Normal.
-        # Is there any "Invalid" case?
-        # Maybe if it looks like a suffix but isn't?
-        # Or maybe user meant "If I drop a file that I expect to be Poison but it doesn't have _PO, warn me"?
-        # But how do we know intent?
-        
-        # "If not in the setting state (file name rule), show dialog"
-        # Maybe they mean: If I drop 5 files, and one is "random.png", what happens?
-        # It goes to Normal.
-        # Is that "Invalid"?
-        # User said: "If not matching rule ... cancel".
-        
-        # Let's interpret strict validation:
-        # We accept files that match the specific suffixes.
-        # What about Normal?
-        # "1 Normal ... face_b.png"
-        # So Normal has NO suffix.
-        # Effectively ALL files are valid (either suffix or normal).
-        
-        # UNLESS "Normal" also requires a rule? No, table says "Additional Char: (Empty)".
-        
-        # Perhaps the validation is: "Don't map 'face_b_75.png' to Normal just because I missed the underscore".
-        # But we can't detect that.
-        
-        # Let's implement the mapping. If everything maps, we proceed.
-        # If there's ambiguity?
-        
-        # Actually, maybe the user wants to prevent "Accidental Normal"?
-        # "If I drop 'face_b_75.png' and 'face_b_50.png', they go to 75 and 50."
-        # "If I drop 'face_b.png', it goes to Normal."
-        # "If I drop 'face_b_XX.png' (unknown suffix), it goes to Normal." -> This might be the "Invalid" case.
-        # But we can't distinguish "Unknown Suffix" from "Base Name".
-        
-        # Let's assume ALL files are valid, mapped to Normal if no suffix match.
-        # BUT, if the user explicitly asked for validation dialog...
-        # "If not in the setting state ... show dialog"
-        
-        # Maybe they mean: "If I drop multiple files, I expect them to be distributed."
-        # "If they ALL map to Normal (because no suffixes), that's probably wrong."
-        # But maybe not.
-        
-        # Let's implement the mapping.
-        # If we find files that map to the SAME state, that might be a conflict?
-        # "face_b.png" and "face_c.png" -> Both Normal.
-        # We should probably allow this (overwriting or ignoring).
-        
-        # Let's proceed with the mapping.
-        
         # Batch Import
         self.face_manager.push_update_state(self.current_face)
         
@@ -1039,26 +675,9 @@ class EditorPanelFrame(ctk.CTkFrame):
             if save:
                 self._save_json()
                 self._refresh_grid_view()
-                self._update_state_combo()
+                self._update_state_buttons()
                 if self.view_mode == "Single" and self.current_state_key == state_key:
                     self.update_preview()
-
-    def on_drop_frame(self, event):
-        files = self.tk.splitlist(event.data)
-        if not files: return
-        
-        file_path = files[0]
-        if os.path.isfile(file_path):
-            from core.logger import Logger
-            Logger.info(f"Dropped frame: {os.path.basename(file_path)}")
-            
-            imported_name = self.face_manager.import_frame(file_path)
-            if imported_name:
-                # Refresh list and select
-                frames = ["None"] + self.face_manager.scan_frames()
-                self.combo_frame.configure(values=frames)
-                self.combo_frame.set(imported_name)
-                self.change_frame(imported_name)
 
     def _import_file(self, file_path):
         self.face_manager.push_update_state(self.current_face) # Undo snapshot
@@ -1111,213 +730,176 @@ class EditorPanelFrame(ctk.CTkFrame):
                     print(f"Error auto-fitting: {e}")
 
             self._save_json()
-            self._update_state_combo()
+            self._update_state_buttons()
             self.update_preview()
 
-    def update_preview(self):
-        if not self.current_face:
-            return
-            
-        if self.view_mode == "Grid":
-            return
-            
-        # Suppress updates during loading/batch updates
-        if getattr(self, 'is_loading', False):
-            return
-
-        states = self.current_face.get('states', {})
-        state_data = states.get(self.current_state_key, {})
-        
-        # Fetch current settings from UI controls
-        current_settings = {
-            'scale': self.slider_scale.get(),
-            'offset_x': int(self.slider_x.get()),
-            'offset_y': int(self.slider_y.get()),
-            'icon_scale_a': self.slider_icon_scale_a.get(),
-            'icon_scale_b': self.slider_icon_scale_b.get(),
-            'use_rembg': bool(self.switch_rembg.get()),
-            'alpha_matting': bool(self.switch_alpha.get()),
-            'alpha_matting_foreground_threshold': int(self.slider_fg_thresh.get()),
-            'alpha_matting_background_threshold': int(self.slider_bg_thresh.get()),
-            'alpha_matting_erode_size': int(self.slider_erode.get())
-        }
-        
-        # Face Center is handled separately via click, but we should include it if present in state_data
-        # to ensure it syncs if we are just updating preview from sliders.
-        # However, sliders don't change face_center.
-        # If we are in Global Mode, we want to sync existing face_center too?
-        # Or just the sliders?
-        # The user said "Pin information and image coordinates... are synchronized".
-        # So we should probably sync face_center from the current state if it exists.
-        if 'face_center' in state_data:
-            current_settings['face_center'] = state_data['face_center']
-
-        is_local = self.chk_individual_mode.get()
-        
-        if not is_local:
-            # GLOBAL MODE: Update Defaults + Sync All
-            # Update defaults
-            if 'defaults' not in self.current_face: self.current_face['defaults'] = {}
-            self.current_face['defaults'].update(current_settings)
-            
-            # Apply to ALL states (Create if missing)
-            for key in self.state_map.values():
-                if key not in states: states[key] = {}
-                s = states[key]
+    def update_preview(self, *args):
+        try:
+            if not self.current_face:
+                return
                 
-                # Skip states that are marked as Individual
-                if s.get('is_individual', False):
-                    continue
+            # Debounce
+            # ... (existing debounce logic if any, or simple pass)
+            
+            # Get Current State Data
+            states = self.current_face.get('states', {})
+            state_data = states.get(self.current_state_key)
+            if not state_data: return
+            
+            # --- Sync Sliders to State Data ---
+            # (Only if not dragging? Or always? Always sync from UI to Data)
+            # But if we are just loading, we shouldn't overwrite.
+            # The sliders are the source of truth when editing.
+            
+            # Update State Data from Sliders (and Sync if needed)
+            self._commit_ui_to_data()
+            
+            # Re-fetch state_data to ensure we have the latest (though it should be same ref)
+            state_data = states.get(self.current_state_key)
+            
+            # Get Source Image
+            source_uuid = state_data.get('source_uuid')
+            if not source_uuid:
+                # Use empty string instead of None to avoid TclError if previous image is missing
+                self.lbl_preview.configure(image="", text="No Image")
+                self.lbl_icon_a.configure(image="")
+                self.lbl_icon_b.configure(image="")
+                return
+                
+            source_path = self.face_manager.get_source_path(self.current_face, source_uuid)
+            if not source_path or not os.path.exists(source_path):
+                self.lbl_preview.configure(image="", text="Image Not Found")
+                return
+
+            # Cache Key Construction
+            # Keys that affect the base image (Load + Rembg)
+            current_cache_key = (
+                source_uuid,
+                state_data.get('use_rembg'),
+                state_data.get('alpha_matting'),
+                state_data.get('alpha_matting_foreground_threshold'),
+                state_data.get('alpha_matting_background_threshold'),
+                state_data.get('alpha_matting_erode_size')
+            )
+            
+            # Check Cache
+            if self.cache_key != current_cache_key:
+                # Cache Miss - Re-process base image
+                self.cached_processed_image = self.image_processor.preprocess_image(source_path, state_data)
+                self.cache_key = current_cache_key
+                
+            # Get Face Center for this state
+            face_center = state_data.get('face_center')
+            if not face_center:
+                # Fallback to defaults if missing (shouldn't happen with migration)
+                face_center = self.current_face.get('defaults', {}).get('face_center')
+
+            # --- Clean Image Cache Check ---
+            # Keys that affect the "clean" character image (scaling, offset) but NOT Game UI
+            current_clean_key = (
+                self.cache_key, # Base image state
+                state_data.get('scale'),
+                state_data.get('offset_x'),
+                state_data.get('offset_y'),
+                face_center.get('x') if face_center else None,
+                face_center.get('y') if face_center else None
+            )
+            
+            clean_img = None
+            if self.clean_cache_key == current_clean_key and self.cached_clean_image:
+                clean_img = self.cached_clean_image
+            else:
+                # Process Image (Use cached base)
+                clean_img = self.image_processor.process_image(
+                    source_path, # Ignored if preprocessed_image is passed
+                    state_data, 
+                    target_size=(1920, 1080),
+                    preprocessed_image=self.cached_processed_image,
+                    face_center=face_center
+                )
+                self.cached_clean_image = clean_img
+                self.clean_cache_key = current_clean_key
+                
+            if clean_img:
+                # --- Icon Preview (Always generate using clean image) ---
+                icon_scale_a = state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0))
+                icon_scale_b = state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0))
+                
+                # Convert list/tuple face_center to dict for image_processor (legacy compat)
+                fc_dict = None
+                if face_center:
+                    fc_dict = {'x': face_center.get('x'), 'y': face_center.get('y')}
                     
-                # Update settings
-                s.update(current_settings)
+                icon_a = self.image_processor.create_face_icon(clean_img, (96, 96), fc_dict, icon_scale_a)
+                icon_b = self.image_processor.create_face_icon(clean_img, (270, 96), fc_dict, icon_scale_b)
                 
-            # Also update the local state_data reference to match
-            state_data.update(current_settings)
-        else:
-            # LOCAL MODE: Update Current State Only
-            state_data.update(current_settings)
+                # Use ImageTk.PhotoImage for robustness
+                photo_icon_a = ImageTk.PhotoImage(icon_a)
+                photo_icon_b = ImageTk.PhotoImage(icon_b)
                 
-        # Ensure current state exists in face data (already done by reference update above if existing, but good to be safe)
-        if self.current_state_key not in states:
-            states[self.current_state_key] = state_data
-        
-        source_uuid = state_data.get('source_uuid')
-        if not source_uuid:
-            # Explicitly clear icons with empty string (tk.Label standard)
-            self.lbl_preview.configure(image="", text="No Image Source")
-            self.lbl_icon_a.configure(image="")
-            self.lbl_icon_b.configure(image="")
-            self.lbl_icon_a.update_idletasks() # Force update
-            
-            self.current_image = None
-            return
-            
-        source_path = self.face_manager.get_source_path(self.current_face, source_uuid)
-        if not source_path:
-            try:
-                self.lbl_preview.configure(image=None, text=loc.get("no_image_source"))
-                self.lbl_icon_a.configure(image=None)
-                self.lbl_icon_b.configure(image=None)
-            except:
-                pass
-            self.current_image = None
-            return
-
-        # Cache Key Construction
-        # Keys that affect the base image (Load + Rembg)
-        current_cache_key = (
-            source_uuid,
-            state_data.get('use_rembg'),
-            state_data.get('alpha_matting'),
-            state_data.get('alpha_matting_foreground_threshold'),
-            state_data.get('alpha_matting_background_threshold'),
-            state_data.get('alpha_matting_erode_size')
-        )
-        
-        # Check Cache
-        if self.cache_key != current_cache_key:
-            # Cache Miss - Re-process base image
-            self.cached_processed_image = self.image_processor.preprocess_image(source_path, state_data)
-            self.cache_key = current_cache_key
-            
-        # Frame
-        frame_id = self.current_face.get('frame_id')
-        frame_path = self.face_manager.get_frame_path(frame_id)
-
-        # Get Face Center for this state
-        face_center = state_data.get('face_center')
-        if not face_center:
-            # Fallback to defaults if missing (shouldn't happen with migration)
-            face_center = self.current_face.get('defaults', {}).get('face_center')
-
-        # Process Image (Use cached base)
-        processed_img = self.image_processor.process_image(
-            source_path, # Ignored if preprocessed_image is passed
-            state_data, 
-            target_size=(1920, 1080),
-            frame_path=frame_path,
-            preprocessed_image=self.cached_processed_image,
-            face_center=face_center
-        )
-        
-        if processed_img:
-            # --- Icon Preview (Generate BEFORE Game UI & Guides) ---
-            icon_scale_a = state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0))
-            icon_scale_b = state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0))
-            
-            # Convert list/tuple face_center to dict for image_processor (legacy compat)
-            fc_dict = None
-            if face_center:
-                fc_dict = {'x': face_center.get('x'), 'y': face_center.get('y')}
+                # Keep references!
+                self.current_icon_a = photo_icon_a
+                self.current_icon_b = photo_icon_b
                 
-            icon_a = self.image_processor.create_face_icon(processed_img, (96, 96), fc_dict, icon_scale_a)
-            icon_b = self.image_processor.create_face_icon(processed_img, (270, 96), fc_dict, icon_scale_b)
-            
-            # Use ImageTk.PhotoImage for robustness
-            photo_icon_a = ImageTk.PhotoImage(icon_a)
-            photo_icon_b = ImageTk.PhotoImage(icon_b)
-            
-            # Keep references!
-            self.current_icon_a = photo_icon_a
-            self.current_icon_b = photo_icon_b
-            
-            self.lbl_icon_a.configure(image=photo_icon_a, text="")
-            self.lbl_icon_b.configure(image=photo_icon_b, text="")
-            self.lbl_icon_a.update_idletasks() # Force update
+                self.lbl_icon_a.configure(image=photo_icon_a, text="")
+                self.lbl_icon_b.configure(image=photo_icon_b, text="")
+                self.lbl_icon_a.update_idletasks() # Force update
 
-            # --- Game UI Background (Composite for Main Preview ONLY) ---
-            # --- Game UI Background (Composite for Main Preview ONLY) ---
-            if self.switch_game_ui.get():
-                try:
-                    assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "assets")
-                    bg01_path = os.path.join(assets_dir, "preview_bg_01.png")
-                    bg02_path = os.path.join(assets_dir, "preview_bg_02.png")
-                    
-                    # 1. Base: BG 01 (Background)
-                    if os.path.exists(bg01_path):
-                        base_img = Image.open(bg01_path).convert("RGBA")
-                        if base_img.size != (1920, 1080):
-                            base_img = base_img.resize((1920, 1080), Image.Resampling.LANCZOS)
-                    else:
-                        # Fallback if missing: Transparent canvas
-                        base_img = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
-
-                    # 2. Middle: Character
-                    # processed_img is the character (RGBA)
-                    base_img.alpha_composite(processed_img)
-                    
-                    # 3. Top: BG 02 (Foreground)
-                    if os.path.exists(bg02_path):
-                        fg_img = Image.open(bg02_path).convert("RGBA")
-                        if fg_img.size != (1920, 1080):
-                            fg_img = fg_img.resize((1920, 1080), Image.Resampling.LANCZOS)
-                        base_img.alpha_composite(fg_img)
+                # --- Game UI Background (Composite for Main Preview ONLY) ---
+                processed_img = clean_img
+                
+                if self.switch_game_ui.get():
+                    try:
+                        assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "assets")
+                        bg01_path = os.path.join(assets_dir, "preview_bg_01.png")
+                        bg02_path = os.path.join(assets_dir, "preview_bg_02.png")
                         
-                    processed_img = base_img
-                    
-                except Exception as e:
-                    print(f"Error loading game UI background: {e}")
-
-            # Draw Guides (AFTER icon generation so icons are clean)
-            if self.show_guides:
-                self._draw_guides(processed_img)
-
-            # Draw Face Center Marker
-            self._draw_marker(processed_img, face_center)
+                        # 1. Base: BG 01 (Background)
+                        if os.path.exists(bg01_path):
+                            base_img = Image.open(bg01_path).convert("RGBA")
+                            if base_img.size != (1920, 1080):
+                                base_img = base_img.resize((1920, 1080), Image.Resampling.LANCZOS)
+                        else:
+                            # Fallback if missing: Transparent canvas
+                            base_img = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
+    
+                        # 2. Middle: Character
+                        # clean_img is the character (RGBA)
+                        base_img.alpha_composite(clean_img)
+                        
+                        # 3. Top: BG 02 (Foreground)
+                        if os.path.exists(bg02_path):
+                            fg_img = Image.open(bg02_path).convert("RGBA")
+                            if fg_img.size != (1920, 1080):
+                                fg_img = fg_img.resize((1920, 1080), Image.Resampling.LANCZOS)
+                            base_img.alpha_composite(fg_img)
+                            
+                        processed_img = base_img
+                        
+                    except Exception as e:
+                        print(f"Error loading game UI background: {e}")
+                        Logger.error(f"Error loading game UI background: {e}")
+    
+                # Draw Face Center Marker
+                self._draw_marker(processed_img, face_center)
+            else:
+                processed_img = None
 
             # Resize for preview (keep aspect ratio)
             preview_height = self.preview_frame.winfo_height()
             if preview_height < 100: preview_height = 400 # Default if not rendered yet
             
-            ratio = processed_img.width / processed_img.height
-            new_h = preview_height - 50 # Padding
-            new_w = int(new_h * ratio)
-            
-            display_img = processed_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            if processed_img:
+                ratio = processed_img.width / processed_img.height
+                new_h = preview_height - 50 # Padding
+                new_w = int(new_h * ratio)
+                
+                display_img = processed_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            else:
+                display_img = None
             
             # Apply View Zoom
-            if self.view_zoom != 1.0:
+            if display_img and self.view_zoom != 1.0:
                 zw = int(new_w * self.view_zoom)
                 zh = int(new_h * self.view_zoom)
                 display_img = display_img.resize((zw, zh), Image.Resampling.NEAREST)
@@ -1337,18 +919,374 @@ class EditorPanelFrame(ctk.CTkFrame):
                 self._update_preview_position()
             except Exception as e:
                 print(f"Warning: Failed to update preview image: {e}")
+                Logger.error(f"Warning: Failed to update preview image: {e}")
                 self.lbl_preview.configure(image=None, text=loc.get("error_processing"))
+                
+        except Exception as e:
+            Logger.error(f"Critical error in update_preview: {e}\n{traceback.format_exc()}")
 
-    def _draw_guides(self, image):
-        draw = ImageDraw.Draw(image)
-        guides = self.guides_data.get(self.guide_type, [])
-        for guide in guides:
-            rect = guide.get('rect')
-            if len(rect) == 4:
-                x, y, w, h = rect
-                shape = [x, y, x+w, y+h]
-                color = guide.get('color', 'green')
-                draw.rectangle(shape, outline=color, width=3)
+    def _refresh_grid_view(self):
+        try:
+            # Clear existing
+            for w in self.grid_widgets:
+                w.destroy()
+            self.grid_widgets.clear()
+            self.grid_images.clear()
+            
+            if not self.current_face: return
+            
+            states = self.current_face.get('states', {})
+            
+            # Calculate Grid Layout
+            # Width of container?
+            container_width = self.grid_view_frame.winfo_width()
+            if container_width < 100: container_width = 800 # Default
+            
+            # Thumb Size from Slider
+            try:
+                # Read slider value directly to avoid stale state
+                slider_val = self.slider_zoom.get()
+                # Map 0.5-3.0 -> 80-300px?
+                # Base size 100px * slider
+                thumb_size = int(100 * slider_val)
+                thumb_size = max(50, min(500, thumb_size))
+            except Exception as e:
+                Logger.error(f"Error reading slider in grid refresh: {e}")
+                thumb_size = 100
+            
+            padding = 10
+            # How many cols?
+            max_cols = max(1, (container_width - 20) // (thumb_size + padding))
+            
+            # Filter states to show? All defined states?
+            # Show all keys defined in self.state_keys
+            
+            row = 0
+            col = 0
+            
+            for key in self.state_keys:
+                # Frame for Item
+                item_frame = ctk.CTkFrame(self.grid_view_frame, fg_color="transparent")
+                item_frame.grid(row=row, column=col, padx=5, pady=5)
+                self.grid_widgets.append(item_frame)
+                
+                # Label
+                lbl_name = ctk.CTkLabel(item_frame, text=loc.get(f"states.{key}"), font=("Arial", 10))
+                lbl_name.pack()
+                
+                # Image/Button
+                # If state has image, show it. Else show placeholder.
+                state_data = states.get(key)
+                img = None
+                
+                if state_data:
+                    source_uuid = state_data.get('source_uuid')
+                    if source_uuid:
+                        source_path = self.face_manager.get_source_path(self.current_face, source_uuid)
+                        if source_path and os.path.exists(source_path):
+                            # Process small thumb
+                            # Use image processor to get a small version?
+                            # Just load and resize for speed?
+                            # Better to use processor to respect crop/rembg if possible, but slow for grid?
+                            # Let's just load raw for speed first?
+                            # Or use cache?
+                            try:
+                                # Simple load & resize
+                                pil_img = Image.open(source_path)
+                                pil_img.thumbnail((thumb_size, thumb_size))
+                                img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=pil_img.size)
+                                self.grid_images.append(img) # Keep ref
+                            except Exception as e:
+                                Logger.error(f"Error loading thumb for {key}: {e}")
+                
+                btn = ctk.CTkButton(
+                    item_frame, 
+                    text="+" if not img else "", 
+                    image=img,
+                    width=thumb_size, 
+                    height=thumb_size,
+                    fg_color="gray30",
+                    command=lambda k=key, has_img=bool(img): self._on_grid_click(k, has_img)
+                )
+                btn.pack()
+                
+                # D&D for this cell
+                try:
+                    btn.drop_target_register('DND_Files')
+                    btn.dnd_bind('<<Drop>>', lambda e, k=key: self.on_drop_grid_cell(e, k))
+                except:
+                    pass
+                
+                col += 1
+                if col >= max_cols:
+                    col = 0
+                    row += 1
+            
+            # Force update of scroll region
+            self.grid_view_frame.update_idletasks()
+            
+        except Exception as e:
+            Logger.error(f"Critical error in _refresh_grid_view: {e}\n{traceback.format_exc()}")
+
+    def _on_grid_click(self, key, has_img):
+        if has_img:
+            self.change_state(key)
+        else:
+            # Open file dialog to import
+            from tkinter import filedialog
+            file_path = filedialog.askopenfilename(
+                title=f"Select Image for {loc.get(f'states.{key}')}",
+                filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.webp;*.bmp")]
+            )
+            if file_path:
+                self._import_file_to_state(file_path, key)
+                self.change_state(key) # Switch to it after import
+                self._refresh_grid_view() # Refresh grid to show new image
+
+    def _check_rembg_model(self):
+        if RembgDownloader.is_model_installed():
+            self.btn_download_model.pack_forget()
+            self.switch_rembg.pack(side="left", padx=5)
+        else:
+            self.switch_rembg.pack_forget()
+            self.btn_download_model.pack(fill="x", padx=5)
+            
+    def download_model(self):
+        # Progress Dialog
+        self.dl_progress = ProgressDialog(self, title="Downloading Model", message="Downloading u2net.onnx...")
+        self.dl_cancel_event = threading.Event()
+        
+        # Add Cancel Button to Progress Dialog (Hack: Accessing internal widget)
+        # Ideally ProgressDialog should support cancellation natively.
+        # For now, let's just use the close button or add a button if possible.
+        # Since ProgressDialog is modal, we need to modify it or use a custom one.
+        # Let's assume we can add a cancel button to it or it has one.
+        # Checking ProgressDialog implementation... it's simple.
+        # Let's just add a cancel button here if we can access the window.
+        btn_cancel = ctk.CTkButton(self.dl_progress.window, text="Cancel", fg_color="red", command=self._cancel_download)
+        btn_cancel.pack(pady=10)
+        
+        downloader = RembgDownloader()
+        downloader.download_model(
+            progress_callback=self.dl_progress.set_progress,
+            cancel_event=self.dl_cancel_event,
+            on_complete=self._on_download_complete
+        )
+        
+    def _cancel_download(self):
+        self.dl_cancel_event.set()
+        
+    def _on_download_complete(self, success):
+        self.dl_progress.close()
+        if success:
+            self.after(0, self._check_rembg_model)
+            from tkinter import messagebox
+            messagebox.showinfo("Success", "Model downloaded successfully.")
+        else:
+            if not self.dl_cancel_event.is_set():
+                from tkinter import messagebox
+                messagebox.showerror("Error", "Download failed.")
+
+    def toggle_rembg(self):
+        if self.switch_rembg.get():
+            self.rembg_settings_frame.pack(fill="x", padx=5, pady=5)
+        else:
+            self.rembg_settings_frame.pack_forget()
+        self.update_preview()
+        
+    def set_view_mode(self, mode):
+        self.view_mode = mode
+        if mode == "Single":
+            self.grid_view_frame.pack_forget()
+            self.preview_frame.pack(expand=True, fill="both")
+            self.btn_view_single.configure(fg_color=("gray75", "gray25"))
+            self.btn_view_grid.configure(fg_color="transparent")
+            self.lbl_zoom.configure(text="Zoom")
+            self.slider_zoom.configure(from_=0.1, to=5.0)
+            self.slider_zoom.set(self.view_zoom)
+            self.update_preview()
+        else:
+            self.preview_frame.pack_forget()
+            self.grid_view_frame.pack(expand=True, fill="both")
+            self.btn_view_grid.configure(fg_color=("gray75", "gray25"))
+            self.btn_view_single.configure(fg_color="transparent")
+            self.lbl_zoom.configure(text="Thumb Size")
+            self.slider_zoom.configure(from_=0.5, to=3.0) # Adjust range for grid?
+            self.slider_zoom.set(1.0) # Reset or keep?
+            self._refresh_grid_view()
+            
+        # Force layout update to prevent glitch
+        self.update_idletasks()
+        self.update_preview()
+
+
+
+    def copy_from_normal(self):
+        if not self.current_face or self.current_state_key == "normal": return
+        states = self.current_face.get('states', {})
+        normal_state = states.get('normal')
+        if not normal_state: return
+        
+        # Copy values
+        self.face_manager.push_update_state(self.current_face) # Undo snapshot
+        
+        current_state = states.get(self.current_state_key, {})
+        current_state['scale'] = normal_state.get('scale', 1.0)
+        current_state['offset_x'] = normal_state.get('offset_x', 0)
+        current_state['offset_y'] = normal_state.get('offset_y', 0)
+        current_state['use_rembg'] = normal_state.get('use_rembg', False)
+        
+        # Ensure state exists
+        states[self.current_state_key] = current_state
+        self._save_json()
+        self.change_state(self.current_state_key) # Refresh UI
+
+    def apply_to_all(self):
+        if not self.current_face: return
+        states = self.current_face.get('states', {})
+        current_state = states.get(self.current_state_key)
+        if not current_state: return
+        
+        from tkinter import messagebox
+        if not messagebox.askyesno("Confirm", loc.get("confirm_apply_all")):
+            return
+            
+        self.face_manager.push_update_state(self.current_face) # Undo snapshot
+            
+        for key in self.state_keys:
+            if key == self.current_state_key: continue
+            if key not in states: states[key] = {}
+            
+            s = states[key]
+            s['scale'] = current_state.get('scale', 1.0)
+            s['offset_x'] = current_state.get('offset_x', 0)
+            s['offset_y'] = current_state.get('offset_y', 0)
+            s['use_rembg'] = current_state.get('use_rembg', False)
+            # Source UUID is NOT copied usually, as states might have different images
+            
+        self._save_json()
+        from core.logger import Logger
+        Logger.info(f"Applied settings to all states for {self.current_face.get('display_name')}")
+
+    def _on_grid_configure(self, event):
+        new_width = self.grid_view_frame.winfo_width()
+        # Ignore small changes (e.g. scrollbar appearance) to prevent loops
+        if abs(new_width - self.last_window_width) < 20: 
+            return
+            
+        self.last_window_width = new_width
+        
+        if self.grid_resize_timer:
+            self.after_cancel(self.grid_resize_timer)
+        self.grid_resize_timer = self.after(200, self._refresh_grid_view)
+
+    def _on_grid_scroll(self, event):
+        try:
+            # Scroll the canvas of the scrollable frame
+            self.grid_view_frame._parent_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        except:
+            pass
+
+    def _on_zoom_slider_change(self, value):
+        if self.ignore_slider_event: return
+        
+        val = float(value)
+        if self.view_mode == "Grid":
+            # Map 0.1-5.0 to 50-500
+            # 1.0 -> 100
+            # grid_size = int(val * 100) # Not needed here, refresh will read slider
+            
+            # Debounce with timer
+            if self.grid_resize_timer:
+                self.after_cancel(self.grid_resize_timer)
+            
+            # Delay refresh
+            self.grid_resize_timer = self.after(100, self._refresh_grid_view)
+            
+        else:
+            # Single View Zoom
+            self.view_zoom = val
+            self.update_preview()
+
+    def load_character(self, face_data):
+        # Show loading overlay
+        self.loading_overlay.show()
+        
+        # Use after(10) to allow UI to render the overlay before heavy lifting
+        # Use after(10) to allow UI to render the overlay before heavy lifting
+        self.after(10, lambda: self._load_character_internal(face_data))
+        
+    def _load_character_internal(self, face_data):
+        self.is_loading = True
+        try:
+            # Save previous character if exists
+            if self.current_face:
+                self._save_json()
+                
+            # Clear previous state to avoid TclError
+            self.clear_editor()
+                
+            if not face_data:
+                return
+
+            # Initialize if not managed
+            status = face_data.get('_status', 'managed')
+            if status != 'managed':
+                # Initialize it
+                face_data = self.face_manager.initialize_face(face_data)
+                if not face_data:
+                    # Failed to init
+                    Logger.error("Failed to initialize face data")
+                    return
+                # Notify list to update status (e.g. remove "Empty" tag)
+                if self.on_update_callback:
+                    self.on_update_callback(face_data)
+
+            self.current_face = face_data
+                
+            # Load Settings FIRST (Before showing editor/preview)
+            self.entry_name.delete(0, "end")
+            self.entry_name.insert(0, face_data.get('display_name', ''))
+            self.change_state("normal", save_before_switch=False) # Reset to normal on load
+            self._update_state_buttons()
+            
+            # Load Face Center
+            fc = face_data.get('face_center')
+            if fc:
+                self.spin_fc_x.delete(0, "end")
+                self.spin_fc_x.insert(0, str(fc.get('x', 0)))
+                self.spin_fc_y.delete(0, "end")
+                self.spin_fc_y.insert(0, str(fc.get('y', 0)))
+            else:
+                self.spin_fc_x.delete(0, "end")
+                self.spin_fc_y.delete(0, "end")
+
+            # Load Preview Settings
+            preview_settings = face_data.get('preview_settings', {})
+            self.view_zoom = preview_settings.get('view_zoom', 1.0)
+            self.view_pan_x = preview_settings.get('view_pan_x', 0)
+            self.view_pan_y = preview_settings.get('view_pan_y', 0)
+            self.view_mode = preview_settings.get('view_mode', "Grid")
+            
+            show_ui = preview_settings.get('show_game_ui', False)
+            if show_ui:
+                self.switch_game_ui.select()
+            else:
+                self.switch_game_ui.deselect()
+
+            # Show Editor
+            self.show_editor(True)
+            
+        except Exception as e:
+            Logger.error(f"Critical error in load_character: {e}\n{traceback.format_exc()}")
+            from tkinter import messagebox
+            messagebox.showerror("Load Error", f"Failed to load character: {e}")
+            
+        finally:
+            self.is_loading = False
+            self.loading_overlay.hide()
+            # Schedule update to allow UI to settle and prevent TclError
+            self.after(200, self.update_preview)
 
     def _draw_marker(self, image, face_center):
         if face_center:
@@ -1432,6 +1370,14 @@ class EditorPanelFrame(ctk.CTkFrame):
             new_zoom = min(5.0, current_zoom + 0.1)
             
         self.view_zoom = new_zoom
+        
+        # Sync Slider (Use flag to prevent loop)
+        if self.view_mode == "Single":
+            self.ignore_slider_event = True
+            self.slider_zoom.set(new_zoom)
+            self.ignore_slider_event = False
+            self.update_preview()
+            
         self.update_preview()
 
     def on_pan_start(self, event):
@@ -1587,79 +1533,138 @@ class EditorPanelFrame(ctk.CTkFrame):
             return
             
         # Validation
-        if not self.current_face.get('face_center'):
-            from tkinter import messagebox
-            messagebox.showwarning("Warning", loc.get("error.no_face_center", "Face center not set!"))
-            return
+        # Removed blocking check for face_center. 
+        # The save thread handles missing face_center by defaulting to image center.
+        # Also, in Local Mode, the global face_center might not be set, which caused this check to fail incorrectly.
+        
+        # if not self.current_face.get('face_center'):
+        #     from tkinter import messagebox
+        #     messagebox.showwarning("Warning", loc.get("error.no_face_center", "Face center not set!"))
+        #     return
 
-        # 1. Save JSON
-        self._save_json()
+        # Show Loading Overlay
+        Logger.info("Showing loading overlay for save...")
+        self.loading_overlay.label.configure(text=loc.get("saving", "Saving..."))
+        self.loading_overlay.show()
         
-        # 2. Export Images
-        face_dir = self.current_face.get('_path')
-        if not face_dir:
-            return
+        # Run in thread (Delay slightly to allow UI to update)
+        Logger.info("Starting save thread...")
+        self.after(10, lambda: threading.Thread(target=self._save_character_thread, daemon=True).start())
+        
+    def _save_character_thread(self):
+        try:
+            Logger.info(f"Starting save process for: {self.current_face.get('display_name')}")
+            
+            # 1. Save JSON (Thread-safe enough for file I/O, but careful with shared state)
+            # Ideally we should clone the data before passing to thread, but for now we assume no concurrent edits.
+            self._save_json()
+            Logger.info("JSON saved.")
+            
+            # 2. Export Images
+            face_dir = self.current_face.get('_path')
+            Logger.info(f"Face directory: {face_dir}")
+            
+            if not face_dir:
+                Logger.error("Face directory is missing!")
+                self.after(0, self._on_save_complete)
+                return
 
-        states = self.current_face.get('states', {})
-        
-        # Progress Dialog
-        progress = ProgressDialog(self, title="Exporting", message="Generating images...")
-        total_steps = len(self.state_map)
-        current_step = 0
-        
-        # Helper to render and save
-        def export_state(state_key, suffix):
-            state_data = states.get(state_key)
-            if not state_data: return
+            states = self.current_face.get('states', {})
+            Logger.info(f"States found: {list(states.keys())}")
             
-            source_uuid = state_data.get('source_uuid')
-            if not source_uuid: return
+            suffix_map = {
+                "normal": "",
+                "poison": "_PO", "hp_75": "_75", "hp_50": "_50", "hp_25": "_25", "dead": "_DE",
+                "afraid": "_AF", "sleep": "_SL", "paralyzed": "_PA", "stoned": "_ST", "ashed": "_AS"
+            }
             
-            source_path = self.face_manager.get_source_path(self.current_face, source_uuid)
-            if not source_path: return
+            count_saved = 0
             
-            frame_id = self.current_face.get('frame_id')
-            frame_path = self.face_manager.get_frame_path(frame_id)
+            for key, suffix in suffix_map.items():
+                state_data = states.get(key)
+                if not state_data: 
+                    # Logger.debug(f"Skipping {key}: No state data")
+                    continue
+                
+                source_uuid = state_data.get('source_uuid')
+                if not source_uuid: 
+                    Logger.debug(f"Skipping {key}: No source UUID")
+                    continue
+                
+                source_path = self.face_manager.get_source_path(self.current_face, source_uuid)
+                if not source_path: 
+                    Logger.warning(f"Skipping {key}: Source path not found for UUID {source_uuid}")
+                    continue
+                
+                frame_id = self.current_face.get('frame_id')
+                frame_path = self.face_manager.get_frame_path(frame_id)
+                
+                # Resolve Face Center for this state
+                face_center = state_data.get('face_center')
+                if not face_center:
+                    # Fallback to defaults/global
+                    face_center = self.current_face.get('defaults', {}).get('face_center')
+                    if not face_center:
+                        face_center = self.current_face.get('face_center')
+                
+                Logger.info(f"Processing {key}...")
+                
+                # Render 1920x1080 (face_c)
+                img_full = self.image_processor.process_image(source_path, state_data, (1920, 1080), frame_path=frame_path)
+                if img_full:
+                    # Save face_c
+                    filename = f"face_c{suffix}.png"
+                    save_path = os.path.join(face_dir, filename)
+                    img_full.save(save_path)
+                    Logger.info(f"Saved {filename}")
+                    
+                    # Save face_d (Copy of c)
+                    img_full.save(os.path.join(face_dir, f"face_d{suffix}.png"))
+                    
+                    # Save face_e (Copy of c)
+                    img_full.save(os.path.join(face_dir, f"face_e{suffix}.png"))
+                    
+                    # Save face_b (270x96) - For ALL states
+                    img_b = self.image_processor.create_face_icon(img_full, (270, 96), face_center)
+                    img_b.save(os.path.join(face_dir, f"face_b{suffix}.png"))
+                    
+                    # If normal state, generate face_a
+                    if key == "normal":
+                        # face_a (96x96)
+                        img_a = self.image_processor.create_face_icon(img_full, (96, 96), face_center)
+                        img_a.save(os.path.join(face_dir, "face_a.png"))
+                        Logger.info("Saved face_a.png")
+                        
+                    count_saved += 1
+                else:
+                    Logger.error(f"Failed to process image for {key}")
             
-            # Render 1920x1080 (face_c)
-            img_full = self.image_processor.process_image(source_path, state_data, (1920, 1080), frame_path=frame_path)
-            if img_full:
-                # Save face_c
-                filename = f"face_c{suffix}.png"
-                img_full.save(os.path.join(face_dir, filename))
-                
-                # Save face_d (Copy of c)
-                img_full.save(os.path.join(face_dir, f"face_d{suffix}.png"))
-                
-                # Save face_e (Copy of c)
-                img_full.save(os.path.join(face_dir, f"face_e{suffix}.png"))
-                
-                # Save face_b (270x96) - For ALL states
-                img_b = self.image_processor.create_face_icon(img_full, (270, 96), self.current_face.get('face_center'))
-                img_b.save(os.path.join(face_dir, f"face_b{suffix}.png"))
-                
-                # If normal state, generate face_a
-                if state_key == "normal":
-                    # face_a (96x96)
-                    img_a = self.image_processor.create_face_icon(img_full, (96, 96), self.current_face.get('face_center'))
-                    img_a.save(os.path.join(face_dir, "face_a.png"))
+            Logger.info(f"Saved character to {face_dir}. Total states processed: {count_saved}")
+            
+        except Exception as e:
+            Logger.error(f"Error saving character: {e}\n{traceback.format_exc()}")
+            print(f"Error saving character: {e}")
+            
+        finally:
+            self.after(0, self._on_save_complete)
 
-        # Export Loop
-        suffix_map = {
-            "normal": "",
-            "poison": "_PO", "hp_75": "_75", "hp_50": "_50", "hp_25": "_25", "dead": "_DE",
-            "afraid": "_AF", "sleep": "_SL", "paralyzed": "_PA", "stoned": "_ST", "ashed": "_AS"
-        }
+    def _on_save_complete(self):
+        self.loading_overlay.hide()
+        self._show_save_success()
+
+    def _show_save_success(self):
+        original_text = self.btn_save.cget("text")
+        original_color = self.btn_save.cget("fg_color")
         
-        for key, suffix in suffix_map.items():
-            export_state(key, suffix)
-            current_step += 1
-            progress.set_progress(current_step / total_steps)
-            
-        progress.close()
-            
-        from core.logger import Logger
-        Logger.info(f"Saved character to {face_dir}")
+        self.btn_save.configure(text=loc.get("saved", "Saved!"), fg_color="#2CC985") # Brighter green
+        
+        def revert():
+            try:
+                self.btn_save.configure(text=original_text, fg_color=original_color)
+            except:
+                pass
+                
+        self.after(2000, revert)
 
     def delete_character(self):
         if not self.current_face:
@@ -1678,6 +1683,16 @@ class EditorPanelFrame(ctk.CTkFrame):
                 messagebox.showerror("Error", loc.get("error_delete_failed", "Failed to delete character. Check logs."))
 
     def _save_json(self):
+        # Capture Preview Settings
+        if self.current_face:
+            self.current_face['preview_settings'] = {
+                'view_zoom': self.view_zoom,
+                'view_pan_x': self.view_pan_x,
+                'view_pan_y': self.view_pan_y,
+                'show_game_ui': bool(self.switch_game_ui.get()),
+                'view_mode': self.view_mode
+            }
+            
         face_dir = self.current_face.get('_path')
         if face_dir:
             self.face_manager.save_project_data(face_dir, self.current_face)

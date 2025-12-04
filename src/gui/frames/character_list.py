@@ -18,6 +18,9 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
         self.drag_source_face = None
         self.drag_start_x = 0
         self.drag_start_y = 0
+        
+        # Clipboard
+        self.clipboard_data = None
 
         self.refresh()
 
@@ -193,8 +196,33 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
             self.on_card_click(face)
         
         menu = tkinter.Menu(self, tearoff=0)
-        menu.add_command(label=loc.get("delete"), command=self.delete_selected)
+        
+        # Copy
+        menu.add_command(label=loc.get("copy", "Copy"), command=lambda: self.copy_character(face))
+        
+        # Paste
+        state = "normal" if self.clipboard_data else "disabled"
+        menu.add_command(label=loc.get("paste", "Paste"), state=state, command=lambda: self.paste_character(face))
+        
         menu.post(event.x_root, event.y_root)
+
+    def copy_character(self, face):
+        self.clipboard_data = face
+        Logger.info(f"Copied to clipboard: {face.get('display_name')}")
+
+    def paste_character(self, target_face):
+        if not self.clipboard_data:
+            return
+            
+        from tkinter import messagebox
+        source_name = self.clipboard_data.get('display_name')
+        target_name = target_face.get('display_name')
+        
+        if messagebox.askyesno(loc.get("paste", "Paste"), f"Overwrite '{target_name}' with '{source_name}'?"):
+            if self.face_manager.copy_face_data(self.clipboard_data, target_face):
+                self.refresh()
+                if self.on_select_callback:
+                    self.on_select_callback(target_face)
 
     def delete_selected(self):
         if not self.selected_faces:
@@ -238,16 +266,33 @@ class CharacterCard(ctk.CTkFrame):
         self.default_fg_color = self._fg_color
         
         face_dir = face_data.get('_path')
-        thumb_path = os.path.join(face_dir, "face_a.png")
+        
+        # Find face_a.png case-insensitively
+        thumb_path = None
+        try:
+            if os.path.exists(face_dir):
+                for f in os.listdir(face_dir):
+                    if f.lower() == "face_a.png":
+                        thumb_path = os.path.join(face_dir, f)
+                        break
+        except:
+            pass
+            
+        # Fallback to standard if not found (though listdir should catch it)
+        if not thumb_path:
+            thumb_path = os.path.join(face_dir, "face_a.png")
         
         self.thumb_image = None
-        if os.path.exists(thumb_path):
+        if thumb_path and os.path.exists(thumb_path):
             try:
                 with Image.open(thumb_path) as img:
                     pil_img = img.copy()
                 self.thumb_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(48, 48))
-            except:
-                pass
+            except Exception as e:
+                Logger.error(f"Failed to load thumbnail {thumb_path}: {e}")
+        else:
+            # Logger.debug(f"Thumbnail not found: {thumb_path}")
+            pass
         
         self.lbl_thumb = ctk.CTkLabel(self, text="No Img" if not self.thumb_image else "", image=self.thumb_image)
         self.lbl_thumb.pack(side="left", padx=5, pady=5)

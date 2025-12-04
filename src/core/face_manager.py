@@ -59,11 +59,21 @@ class FaceManager:
             else:
                 # Check for existing images (Unmanaged)
                 # We look for standard game files: face_a.png, face_b.png, etc.
-                # Or just any image? Let's check face_a.png as it's the main thumb.
                 has_images = False
-                thumb_path = os.path.join(face_dir, "face_a.png")
-                if os.path.exists(thumb_path):
-                    has_images = True
+                
+                # Case-insensitive check for face_a.png
+                try:
+                    files = os.listdir(face_dir)
+                    for f in files:
+                        if f.lower() == "face_a.png":
+                            has_images = True
+                            break
+                except OSError:
+                    pass
+                
+                # thumb_path = os.path.join(face_dir, "face_a.png")
+                # if os.path.exists(thumb_path):
+                #     has_images = True
                 
                 status = "unmanaged" if has_images else "empty"
                 
@@ -115,7 +125,8 @@ class FaceManager:
             "uuid": str(uuid.uuid4()),
             "created_at": datetime.datetime.now().isoformat(),
             "face_center": None,
-            "frame_id": None,
+            "created_at": datetime.datetime.now().isoformat(),
+            "face_center": None,
             "states": {
                 "normal": {
                     "suffix": "",
@@ -203,46 +214,96 @@ class FaceManager:
         action = self.undo_stack.pop()
         action_type = action.get('type')
         
-        if action_type == 'delete':
+        if action_type == 'update':
+            # Restore previous state
+            prev_data = action.get('face_data')
+            path = action.get('path')
+            if path and os.path.exists(path):
+                self.save_project_data(path, prev_data)
+                # Update in-memory reference
+                for face in self.faces:
+                    if face.get('_path') == path:
+                        face.update(prev_data)
+                        return face
+                        
+        elif action_type == 'delete':
             # Restore from trash
             trash_path = action.get('trash_path')
             original_path = action.get('original_path')
             face_data = action.get('face_data')
             
-            if os.path.exists(trash_path):
+            if os.path.exists(trash_path) and not os.path.exists(original_path):
                 try:
-                    # Ensure original path is free (it should be)
-                    if os.path.exists(original_path):
-                        pass
-                        
                     shutil.move(trash_path, original_path)
                     self.faces.append(face_data)
-                    Logger.info(f"Undid delete: {face_data.get('display_name')}")
-                    return face_data # Return restored data
+                    # Sort faces?
+                    self.faces.sort(key=lambda x: x.get('_dirname', ''))
+                    Logger.info(f"Restored character: {face_data.get('display_name')}")
+                    return face_data
                 except Exception as e:
-                    Logger.error(f"Undo failed: {e}")
-                    return None
+                    Logger.error(f"Error restoring face: {e}")
                     
-        elif action_type == 'update':
-            # Restore previous state
-            prev_data = action.get('face_data')
-            path = action.get('path')
-            
-            if path and os.path.exists(path):
-                # Overwrite json
-                if self.save_project_data(path, prev_data):
-                    # Update in-memory list
-                    # Find the face object in self.faces and replace it
-                    for i, f in enumerate(self.faces):
-                        if f.get('_path') == path:
-                            # Restore internal keys
-                            prev_data['_path'] = path
-                            prev_data['_dirname'] = os.path.basename(path)
-                            self.faces[i] = prev_data
-                            Logger.info(f"Undid update: {prev_data.get('display_name')}")
-                            return prev_data
-            
         return None
+
+    def copy_face_data(self, source_face: Dict, target_face: Dict) -> bool:
+        """Copies content from source_face to target_face, overwriting target."""
+        source_path = source_face.get('_path')
+        target_path = target_face.get('_path')
+        
+        if not source_path or not target_path:
+            return False
+            
+        try:
+            # 1. Push Undo for Target
+            self.push_update_state(target_face)
+            
+            # 2. Copy Files (Images & Sources)
+            # We need to clear target directory of images/sources first?
+            # Or just overwrite? Overwrite is safer/easier.
+            # But we should probably clean up old sources if they are not used?
+            # For simplicity, let's just copy over.
+            
+            # Copy 'sources' directory
+            src_sources = os.path.join(source_path, "sources")
+            dst_sources = os.path.join(target_path, "sources")
+            
+            if os.path.exists(src_sources):
+                if os.path.exists(dst_sources):
+                    shutil.rmtree(dst_sources)
+                shutil.copytree(src_sources, dst_sources)
+            
+            # Copy generated images (face_*.png)
+            for file in os.listdir(source_path):
+                if file.lower().endswith('.png') and file.startswith('face_'):
+                    shutil.copy2(os.path.join(source_path, file), os.path.join(target_path, file))
+            
+            # 3. Update Data
+            # We want to copy everything EXCEPT _path, _dirname, _status
+            # And maybe generate new UUID?
+            
+            # Deep copy source data
+            import copy
+            new_data = copy.deepcopy(source_face)
+            
+            # Restore target's structural keys
+            new_data['_path'] = target_face['_path']
+            new_data['_dirname'] = target_face['_dirname']
+            new_data['_status'] = 'managed' # It becomes managed
+            new_data['uuid'] = str(uuid.uuid4()) # New UUID
+            
+            # Save to target
+            if self.save_project_data(target_path, new_data):
+                # Update in-memory target object
+                target_face.clear()
+                target_face.update(new_data)
+                Logger.info(f"Copied {source_face.get('display_name')} to {target_face.get('display_name')}")
+                return True
+                
+        except Exception as e:
+            Logger.error(f"Error copying face: {e}")
+            return False
+        
+        return False
 
     def import_source_image(self, face_data: Dict, source_path: str) -> Optional[str]:
         """Imports an image into the sources folder and returns its new UUID."""
@@ -283,38 +344,22 @@ class FaceManager:
             return matches[0]
         return None
 
-    def scan_frames(self) -> List[str]:
-        """Scans assets/frames for frame images."""
-        frames_dir = os.path.join(self.base_path, "assets", "frames")
-        if not os.path.exists(frames_dir):
-            return []
-            
-        # Supported extensions
-        exts = ['*.png', '*.jpg', '*.webp']
-        frames = []
-        for ext in exts:
-            frames.extend([os.path.basename(f) for f in glob.glob(os.path.join(frames_dir, ext))])
-        return sorted(frames)
 
     def get_frame_path(self, frame_id: str) -> Optional[str]:
-        """Resolves absolute path for a frame ID."""
+        """Resolves the absolute path of a frame image by ID."""
         if not frame_id:
             return None
-        return os.path.join(self.base_path, "assets", "frames", frame_id)
-
-    def import_frame(self, file_path: str) -> Optional[str]:
-        """Imports a frame image into assets/frames."""
-        frames_dir = os.path.join(self.base_path, "assets", "frames")
-        if not os.path.exists(frames_dir):
-            os.makedirs(frames_dir)
             
-        filename = os.path.basename(file_path)
-        dest_path = os.path.join(frames_dir, filename)
+        # Assuming frames are stored in assets/frames or similar?
+        # Or maybe relative to base_path?
+        # For now, let's assume assets/frames relative to app root.
+        # But FaceManager doesn't know app root easily unless passed.
+        # Let's assume it's passed or we can deduce it.
+        # Actually, let's just return None for now if we don't support frames yet,
+        # OR check if there is a known location.
         
-        try:
-            shutil.copy2(file_path, dest_path)
-            Logger.info(f"Imported frame: {filename}")
-            return filename
-        except Exception as e:
-            Logger.error(f"Error importing frame {filename}: {e}")
-            return None
+        # If frame_id is an absolute path, return it
+        if os.path.isabs(frame_id) and os.path.exists(frame_id):
+            return frame_id
+            
+        return None

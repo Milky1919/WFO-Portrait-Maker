@@ -110,16 +110,7 @@ class ImageProcessor:
         
         canvas.alpha_composite(img, (int(paste_x), int(paste_y)))
         
-        # 4. Frame Overlay
-        if frame_path and os.path.exists(frame_path):
-            try:
-                frame_img = Image.open(frame_path).convert("RGBA")
-                # Resize frame to target size if needed (assuming frames match target size)
-                if frame_img.size != target_size:
-                    frame_img = frame_img.resize(target_size, Image.Resampling.LANCZOS)
-                canvas.alpha_composite(frame_img, (0, 0))
-            except Exception as e:
-                Logger.error(f"Error loading frame {frame_path}: {e}")
+
         
         return canvas
 
