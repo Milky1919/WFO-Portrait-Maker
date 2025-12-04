@@ -118,7 +118,13 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.lbl_preview.bind("<ButtonRelease-1>", self.on_mouse_up)
         self.lbl_preview.bind("<MouseWheel>", self.on_mouse_wheel) # Windows
         self.lbl_preview.bind("<Button-4>", self.on_mouse_wheel) # Linux scroll up
+        self.lbl_preview.bind("<Button-4>", self.on_mouse_wheel) # Linux scroll up
         self.lbl_preview.bind("<Button-5>", self.on_mouse_wheel) # Linux scroll down
+        
+        # Middle Click Pan
+        self.lbl_preview.bind("<ButtonPress-2>", self.on_pan_start)
+        self.lbl_preview.bind("<B2-Motion>", self.on_pan_drag)
+        self.lbl_preview.bind("<ButtonRelease-2>", self.on_pan_end)
         
         # Grid View Frame (Initially hidden)
         self.grid_view_frame = ctk.CTkScrollableFrame(self.preview_container, label_text="State Overview")
@@ -160,6 +166,10 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         self.cached_processed_image = None
         self.cache_key = None
+        
+        self.view_pan_x = 0
+        self.view_pan_y = 0
+        self._update_preview_position()
         
         self.grid_images.clear()
         
@@ -1257,28 +1267,35 @@ class EditorPanelFrame(ctk.CTkFrame):
             self.lbl_icon_a.update_idletasks() # Force update
 
             # --- Game UI Background (Composite for Main Preview ONLY) ---
+            # --- Game UI Background (Composite for Main Preview ONLY) ---
             if self.switch_game_ui.get():
                 try:
-                    bg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "assets", "preview_bg.png")
-                    if os.path.exists(bg_path):
-                        bg_img = Image.open(bg_path).convert("RGBA")
-                        if bg_img.size != (1920, 1080):
-                            bg_img = bg_img.resize((1920, 1080), Image.Resampling.LANCZOS)
+                    assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "assets")
+                    bg01_path = os.path.join(assets_dir, "preview_bg_01.png")
+                    bg02_path = os.path.join(assets_dir, "preview_bg_02.png")
+                    
+                    # 1. Base: BG 01 (Background)
+                    if os.path.exists(bg01_path):
+                        base_img = Image.open(bg01_path).convert("RGBA")
+                        if base_img.size != (1920, 1080):
+                            base_img = base_img.resize((1920, 1080), Image.Resampling.LANCZOS)
+                    else:
+                        # Fallback if missing: Transparent canvas
+                        base_img = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
+
+                    # 2. Middle: Character
+                    # processed_img is the character (RGBA)
+                    base_img.alpha_composite(processed_img)
+                    
+                    # 3. Top: BG 02 (Foreground)
+                    if os.path.exists(bg02_path):
+                        fg_img = Image.open(bg02_path).convert("RGBA")
+                        if fg_img.size != (1920, 1080):
+                            fg_img = fg_img.resize((1920, 1080), Image.Resampling.LANCZOS)
+                        base_img.alpha_composite(fg_img)
                         
-                        # Composite character ON TOP of background
-                        # processed_img is the character (RGBA)
-                        # Create a copy for display so we don't modify the original processed_img used for icons/saving?
-                        # Actually processed_img is a fresh copy from image_processor usually.
-                        # But we already used it for icons.
-                        # Let's use a copy for display to be safe, or just overwrite if we don't need clean anymore.
-                        # We need clean for coordinate calc? No, coordinate calc uses current_pil_image.
-                        # So we should update current_pil_image to be the composited one?
-                        # No, coordinate calc (face center) should be relative to the CHARACTER image, not the UI.
-                        # But if we show UI, the user clicks on the UI.
-                        # If UI is 1920x1080 and Character is 1920x1080, it matches.
-                        
-                        bg_img.alpha_composite(processed_img)
-                        processed_img = bg_img
+                    processed_img = base_img
+                    
                 except Exception as e:
                     print(f"Error loading game UI background: {e}")
 
@@ -1317,6 +1334,7 @@ class EditorPanelFrame(ctk.CTkFrame):
                 self.current_pil_image = processed_img # Keep original for coordinate calc
                 
                 self.lbl_preview.configure(image=photo_img, text="")
+                self._update_preview_position()
             except Exception as e:
                 print(f"Warning: Failed to update preview image: {e}")
                 self.lbl_preview.configure(image=None, text=loc.get("error_processing"))
@@ -1374,7 +1392,8 @@ class EditorPanelFrame(ctk.CTkFrame):
             # Sensitivity factor
             # Convert screen pixels to target pixels (1920x1080)
             # Adjust for View Zoom
-            img_w, img_h = self.current_image._size
+            img_w = self.current_image.width()
+            img_h = self.current_image.height()
             # img_w is the DISPLAY width (already zoomed)
             
             # If view_zoom is 2.0, moving 10px on screen is 5px on original image
@@ -1415,6 +1434,32 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.view_zoom = new_zoom
         self.update_preview()
 
+    def on_pan_start(self, event):
+        self.is_panning = True
+        self.pan_start_x = event.x_root
+        self.pan_start_y = event.y_root
+
+    def on_pan_drag(self, event):
+        if not self.is_panning: return
+        
+        dx = event.x_root - self.pan_start_x
+        dy = event.y_root - self.pan_start_y
+        
+        self.view_pan_x += dx
+        self.view_pan_y += dy
+        
+        self.pan_start_x = event.x_root
+        self.pan_start_y = event.y_root
+        
+        self._update_preview_position()
+
+    def on_pan_end(self, event):
+        self.is_panning = False
+
+    def _update_preview_position(self):
+        # Update label position based on pan
+        self.lbl_preview.place(relx=0.5, rely=0.5, anchor="center", x=self.view_pan_x, y=self.view_pan_y)
+
     def toggle_individual_mode(self):
         is_local = self.chk_individual_mode.get()
         
@@ -1450,6 +1495,16 @@ class EditorPanelFrame(ctk.CTkFrame):
                     # Cancel -> Revert Checkbox
                     self.chk_individual_mode.select()
             return
+        
+    def on_preview_click(self, event):
+        if not self.current_face or not self.current_image: return
+        
+        click_x = event.x
+        click_y = event.y
+        
+        # Get current display size
+        img_w = self.current_image.width()
+        img_h = self.current_image.height()
         
         # Scale back to original resolution (1920x1080)
         scale_x = 1920 / img_w
