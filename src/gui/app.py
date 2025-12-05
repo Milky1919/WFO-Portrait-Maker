@@ -176,9 +176,16 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         # Open Folder Button (Left)
         self.btn_open_folder = ctk.CTkButton(self.footer_frame, text=loc.get("open_folder"), width=120, command=self.open_face_folder)
         self.btn_open_folder.pack(side="left", padx=5)
+
+        # Undo/Redo Buttons (Left, next to Open Folder)
+        self.btn_undo = ctk.CTkButton(self.footer_frame, text=loc.get("undo", "Undo"), width=60, command=self.undo_action, state="disabled")
+        self.btn_undo.pack(side="left", padx=5)
+        
+        self.btn_redo = ctk.CTkButton(self.footer_frame, text=loc.get("redo", "Redo"), width=60, command=self.redo_action, state="disabled")
+        self.btn_redo.pack(side="left", padx=5)
         
         # Language Switcher (Right)
-        self.lbl_lang = ctk.CTkLabel(self.footer_frame, text="Language:")
+        self.lbl_lang = ctk.CTkLabel(self.footer_frame, text=loc.get("language", "Language:"))
         self.lbl_lang.pack(side="right", padx=5)
         
         current_lang = self.config.get("language", "JP")
@@ -196,17 +203,39 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         Logger.info("Application started.")
         
         # Bind Undo
+        # Bind Undo/Redo
         self.bind("<Control-z>", self.undo_action)
+        self.bind("<Control-y>", self.redo_action)
+        self.bind("<Control-Shift-z>", self.redo_action) # Alternative Redo
 
     def undo_action(self, event=None):
         restored_data = self.face_manager.undo()
+        self._handle_history_update(restored_data)
+
+    def redo_action(self, event=None):
+        restored_data = self.face_manager.redo()
+        self._handle_history_update(restored_data)
+
+    def _handle_history_update(self, restored_data):
+        # Update button states
+        self.update_history_buttons()
+        
         if restored_data:
-            self.character_list.refresh()
-            # If the restored data matches the currently edited face, reload it
-            if self.editor_panel.current_face and self.editor_panel.current_face.get('_path') == restored_data.get('_path'):
-                self.editor_panel.load_character(restored_data)
-            elif isinstance(restored_data, bool) and restored_data: # Handle legacy boolean return if any
-                 self.character_list.refresh()
+            if isinstance(restored_data, bool):
+                # Boolean True means list refresh needed (e.g. delete/restore)
+                self.character_list.refresh()
+            elif isinstance(restored_data, dict):
+                # Dictionary means face data restored
+                self.character_list.refresh() # Refresh list to show changes
+                # If the restored data matches the currently edited face, reload it
+                if self.editor_panel.current_face and self.editor_panel.current_face.get('_path') == restored_data.get('_path'):
+                    self.editor_panel.load_character(restored_data)
+
+    def update_history_buttons(self):
+        if hasattr(self, 'btn_undo'):
+            self.btn_undo.configure(state="normal" if self.face_manager.can_undo else "disabled")
+        if hasattr(self, 'btn_redo'):
+            self.btn_redo.configure(state="normal" if self.face_manager.can_redo else "disabled")
 
     def append_log(self, message):
         self.log_textbox.configure(state="normal")

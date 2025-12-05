@@ -26,7 +26,7 @@ class LoadingOverlay(ctk.CTkFrame):
         self.spinner.pack(pady=10)
         self.spinner.start()
         
-        self.label = ctk.CTkLabel(self.center_frame, text="Loading...", font=("Arial", 16))
+        self.label = ctk.CTkLabel(self.center_frame, text=loc.get("loading", "Loading..."), font=("Arial", 16))
         self.label.pack(pady=5)
         
         self.lift() # Ensure on top
@@ -112,7 +112,7 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.slider_zoom = ctk.CTkSlider(self.view_mode_frame, from_=0.1, to=5.0, width=150, command=self._on_zoom_slider_change)
         self.slider_zoom.set(1.0) 
         self.slider_zoom.pack(side="right", padx=10)
-        self.lbl_zoom = ctk.CTkLabel(self.view_mode_frame, text="Zoom")
+        self.lbl_zoom = ctk.CTkLabel(self.view_mode_frame, text=loc.get("zoom", "Zoom"))
         self.lbl_zoom.pack(side="right", padx=5)
         
         # Single View Frame
@@ -260,9 +260,9 @@ class EditorPanelFrame(ctk.CTkFrame):
         
 
 
-        # Image Source
-        self.btn_import = ctk.CTkButton(self.controls_frame, text=loc.get("import_image"), command=self.import_image)
-        self.btn_import.pack(fill="x", padx=10, pady=10)
+        # Image Source (Removed as per user request - use Grid View DnD)
+        # self.btn_import = ctk.CTkButton(self.controls_frame, text=loc.get("import_image"), command=self.import_image)
+        # self.btn_import.pack(fill="x", padx=10, pady=10)
         
         # Sliders
         self.slider_scale = self._create_slider(loc.get("scale"), 0.1, 2.0, 1.0)
@@ -310,18 +310,18 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.rembg_action_frame.pack(fill="x", padx=5, pady=2)
         
         self.switch_rembg = ctk.CTkSwitch(self.rembg_action_frame, text=loc.get("enable"), command=self.toggle_rembg)
-        self.btn_download_model = ctk.CTkButton(self.rembg_action_frame, text="Download Model", command=self.download_model)
+        self.btn_download_model = ctk.CTkButton(self.rembg_action_frame, text=loc.get("download_model", "Download Model"), command=self.download_model)
         
         # Fine-tuning Controls (Hidden by default)
         self.rembg_settings_frame = ctk.CTkFrame(self.rembg_frame)
         
         # Alpha Matting
-        self.switch_alpha = ctk.CTkSwitch(self.rembg_settings_frame, text="Alpha Matting", command=self.update_preview)
+        self.switch_alpha = ctk.CTkSwitch(self.rembg_settings_frame, text=loc.get("alpha_matting", "Alpha Matting"), command=self.update_preview)
         self.switch_alpha.pack(padx=5, pady=5, anchor="w")
         
         # Thresholds
         # Thresholds (Presets)
-        self.lbl_presets = ctk.CTkLabel(self.rembg_settings_frame, text="Removal Strength")
+        self.lbl_presets = ctk.CTkLabel(self.rembg_settings_frame, text=loc.get("removal_strength", "Removal Strength"))
         self.lbl_presets.pack(anchor="w", padx=5)
         
         self.preset_var = ctk.StringVar(value="3")
@@ -339,7 +339,7 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.icon_frame = ctk.CTkFrame(self.controls_frame)
         self.icon_frame.pack(fill="x", padx=10, pady=10)
         
-        ctk.CTkLabel(self.icon_frame, text="Icon Preview Scale").pack(anchor="w", padx=5)
+        ctk.CTkLabel(self.icon_frame, text=loc.get("icon_preview_scale", "Icon Preview Scale")).pack(anchor="w", padx=5)
         
         self.slider_icon_scale_a = self._create_slider(loc.get("icon_scale_a"), 0.5, 2.0, 1.0)
         self.slider_icon_scale_b = self._create_slider(loc.get("icon_scale_b"), 0.5, 2.0, 1.0)
@@ -380,6 +380,9 @@ class EditorPanelFrame(ctk.CTkFrame):
         slider = ctk.CTkSlider(frame, from_=from_, to=to)
         slider.set(default)
         slider.pack(side="right", fill="x", expand=True, padx=5)
+        
+        # Bind click to push undo state
+        slider.bind("<ButtonPress-1>", lambda e: self.face_manager.push_update_state(self.current_face) if self.current_face else None)
         
         # Callbacks
         # Callbacks
@@ -1036,6 +1039,9 @@ class EditorPanelFrame(ctk.CTkFrame):
                 messagebox.showerror("Error", "Download failed.")
 
     def toggle_rembg(self):
+        if self.current_face:
+            self.face_manager.push_update_state(self.current_face)
+            
         if self.switch_rembg.get():
             self.rembg_settings_frame.pack(fill="x", padx=5, pady=5)
         else:
@@ -1157,11 +1163,10 @@ class EditorPanelFrame(ctk.CTkFrame):
             self.update_preview()
 
     def load_character(self, face_data):
-        # Show loading overlay
-        self.loading_overlay.show()
+        # Remove loading overlay to prevent flickering on fast loads
+        # self.loading_overlay.show()
         
-        # Use after(10) to allow UI to render the overlay before heavy lifting
-        # Use after(10) to allow UI to render the overlay before heavy lifting
+        # Use after(10) to allow UI to update
         self.after(10, lambda: self._load_character_internal(face_data))
         
     def _load_character_internal(self, face_data):
@@ -1232,7 +1237,7 @@ class EditorPanelFrame(ctk.CTkFrame):
             
         finally:
             self.is_loading = False
-            self.loading_overlay.hide()
+            # self.loading_overlay.hide()
             # Schedule update to allow UI to settle and prevent TclError
             self.after(200, self.update_preview)
 
@@ -1254,6 +1259,9 @@ class EditorPanelFrame(ctk.CTkFrame):
             draw.ellipse((x-r, y-r, x+r, y+r), outline=color, width=2)
 
     def on_mouse_down(self, event):
+        if self.current_face:
+            self.face_manager.push_update_state(self.current_face)
+            
         self.drag_start_x = event.x
         self.drag_start_y = event.y
         self.is_dragging = False
@@ -1362,7 +1370,10 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.lbl_preview.place(relx=0.5, rely=0.5, anchor="center", x=self.view_pan_x, y=self.view_pan_y)
 
     def toggle_individual_mode(self):
-        is_local = self.chk_individual_mode.get()
+        if self.current_face:
+            self.face_manager.push_update_state(self.current_face)
+            
+        is_local = bool(self.chk_individual_mode.get())
         
         # Save mode to current state
         if self.current_face and self.current_state_key:
@@ -1396,6 +1407,8 @@ class EditorPanelFrame(ctk.CTkFrame):
                     # Cancel -> Revert Checkbox
                     self.chk_individual_mode.select()
             return
+            
+        self.update_preview()
         
     def on_preview_click(self, event):
         if not self.current_face or not self.current_image: return
@@ -1760,11 +1773,11 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.update_preview()
 
     def _perform_full_render(self):
-        """Async full render with loading overlay"""
+        """Async full render (Background)"""
         # Logger.info(f"_perform_full_render called. Stack: {''.join(traceback.format_stack()[-3:])}")
         if getattr(self, 'is_loading', False): return
         
-        self.loading_overlay.show()
+        # self.loading_overlay.show() # Removed to prevent flicker
         self.is_loading = True
         
         def run():
@@ -1777,7 +1790,7 @@ class EditorPanelFrame(ctk.CTkFrame):
                 
             except Exception as e:
                 Logger.error(f"Error in full render thread: {e}")
-                self.after(0, lambda: self.loading_overlay.hide())
+                # self.after(0, lambda: self.loading_overlay.hide())
                 self.is_loading = False
 
         threading.Thread(target=run, daemon=True).start()
@@ -1811,7 +1824,7 @@ class EditorPanelFrame(ctk.CTkFrame):
             Logger.error(f"Error updating UI after full render: {e}")
             
         finally:
-            self.loading_overlay.hide()
+            # self.loading_overlay.hide()
             self.is_loading = False
 
     def _generate_preview_image_internal(self, fast_mode=False):

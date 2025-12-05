@@ -44,7 +44,7 @@ class FaceDirErrorDialog(ctk.CTkToplevel):
         if loc.get("edit") == "Edit": self.combo_lang.set("EN") # Simple heuristic
         
         self.combo_lang.pack(side="right")
-        ctk.CTkLabel(self.lang_frame, text="Language:").pack(side="right", padx=5)
+        ctk.CTkLabel(self.lang_frame, text=loc.get("language", "Language:")).pack(side="right", padx=5)
 
         # Message
         self.lbl_title = ctk.CTkLabel(self, text=loc.get("setup.title", "Setup Required"), font=("Arial", 20, "bold"))

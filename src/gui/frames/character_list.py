@@ -294,16 +294,16 @@ class CharacterCard(ctk.CTkFrame):
             # Logger.debug(f"Thumbnail not found: {thumb_path}")
             pass
         
-        self.lbl_thumb = ctk.CTkLabel(self, text="No Img" if not self.thumb_image else "", image=self.thumb_image)
+        self.lbl_thumb = ctk.CTkLabel(self, text=loc.get("no_img", "No Img") if not self.thumb_image else "", image=self.thumb_image)
         self.lbl_thumb.pack(side="left", padx=5, pady=5)
         
         status = face_data.get('_status', 'managed')
         
-        display_name = face_data.get('display_name', 'Unknown')
+        display_name = face_data.get('display_name', loc.get("unknown", "Unknown"))
         if status == 'empty':
-            display_name = "(Empty)"
+            display_name = loc.get("empty", "(Empty)")
         elif status == 'unmanaged':
-            display_name = f"{display_name} (Unmanaged)"
+            display_name = f"{display_name} {loc.get('unmanaged', '(Unmanaged)')}"
             
         self.lbl_name = ctk.CTkLabel(self, text=display_name, font=("Arial", 12, "bold" if status == 'managed' else "normal"))
         
