@@ -777,7 +777,7 @@ class EditorPanelFrame(ctk.CTkFrame):
             if fast_mode:
                 result = self._generate_preview_image_internal(fast_mode=True)
                 # Update UI directly without touching overlay
-                display_img, processed_img, _, _ = result
+                display_img, processed_img, icon_a, icon_b = result
                 if display_img:
                     self.lbl_preview.configure(image=None)
                     photo_img = ImageTk.PhotoImage(display_img)
@@ -785,6 +785,17 @@ class EditorPanelFrame(ctk.CTkFrame):
                     self.current_pil_image = processed_img
                     self.lbl_preview.configure(image=photo_img, text="")
                     self._update_preview_position()
+
+                # Update Icons (Fast Mode)
+                if icon_a:
+                    photo_icon_a = ImageTk.PhotoImage(icon_a)
+                    self.current_icon_a = photo_icon_a
+                    self.lbl_icon_a.configure(image=photo_icon_a, text="")
+                
+                if icon_b:
+                    photo_icon_b = ImageTk.PhotoImage(icon_b)
+                    self.current_icon_b = photo_icon_b
+                    self.lbl_icon_b.configure(image=photo_icon_b, text="")
             else:
                 # If called without fast_mode (e.g. load), run async
                 self._perform_full_render()
@@ -1871,16 +1882,15 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         if clean_img:
             # Icons
-            if not fast_mode:
-                icon_scale_a = state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0))
-                icon_scale_b = state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0))
+            icon_scale_a = state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0))
+            icon_scale_b = state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0))
+            
+            fc_dict = None
+            if face_center:
+                fc_dict = {'x': face_center.get('x'), 'y': face_center.get('y')}
                 
-                fc_dict = None
-                if face_center:
-                    fc_dict = {'x': face_center.get('x'), 'y': face_center.get('y')}
-                    
-                icon_a = self.image_processor.create_face_icon(clean_img, (96, 96), fc_dict, icon_scale_a)
-                icon_b = self.image_processor.create_face_icon(clean_img, (270, 96), fc_dict, icon_scale_b)
+            icon_a = self.image_processor.create_face_icon(clean_img, (96, 96), fc_dict, icon_scale_a)
+            icon_b = self.image_processor.create_face_icon(clean_img, (270, 96), fc_dict, icon_scale_b)
 
             # Game UI Background
             processed_img = clean_img
