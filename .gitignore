@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# Config and Logs
+app_config.json
+debug_log.txt
+
+# Models
+*.onnx
+*.pth
+
+# OS
+.DS_Store
+
+# Environment
+venv/
+.env
