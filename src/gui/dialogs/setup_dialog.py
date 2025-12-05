@@ -2,6 +2,7 @@ import customtkinter as ctk
 import os
 import subprocess
 from core.localization import loc
+from gui.fonts import get_ui_font_family
 
 class FaceDirErrorDialog(ctk.CTkToplevel):
     def __init__(self, master, game_exe_path, face_dir_path, on_retry=None, on_create=None, on_exit=None, on_lang_change=None):
@@ -47,7 +48,7 @@ class FaceDirErrorDialog(ctk.CTkToplevel):
         ctk.CTkLabel(self.lang_frame, text=loc.get("language", "Language:")).pack(side="right", padx=5)
 
         # Message
-        self.lbl_title = ctk.CTkLabel(self, text=loc.get("setup.title", "Setup Required"), font=("Arial", 20, "bold"))
+        self.lbl_title = ctk.CTkLabel(self, text=loc.get("setup.title", "Setup Required"), font=(get_ui_font_family(), 20, "bold"))
         self.lbl_title.pack(pady=(10, 10))
         
         msg = loc.get("setup.message", "Face directory not found.\n\nPath: {}\n\nPlease choose an action:").format(self.face_dir_path)

@@ -4,6 +4,7 @@ import os
 from PIL import Image
 import tkinter
 from core.localization import loc
+from gui.fonts import get_ui_font_family
 from core.logger import Logger
 
 class CharacterListFrame(ctk.CTkScrollableFrame):
@@ -305,7 +306,7 @@ class CharacterCard(ctk.CTkFrame):
         elif status == 'unmanaged':
             display_name = f"{display_name} {loc.get('unmanaged', '(Unmanaged)')}"
             
-        self.lbl_name = ctk.CTkLabel(self, text=display_name, font=("Arial", 12, "bold" if status == 'managed' else "normal"))
+        self.lbl_name = ctk.CTkLabel(self, text=display_name, font=(get_ui_font_family(), 12, "bold" if status == 'managed' else "normal"))
         
         if status == 'empty':
             self.lbl_name.configure(text_color="gray")
@@ -315,7 +316,7 @@ class CharacterCard(ctk.CTkFrame):
         self.lbl_name.pack(side="left", padx=10)
         
         dirname = face_data.get('_dirname', '')
-        self.lbl_id = ctk.CTkLabel(self, text=dirname, font=("Arial", 10))
+        self.lbl_id = ctk.CTkLabel(self, text=dirname, font=(get_ui_font_family(), 10))
         self.lbl_id.pack(side="right", padx=5)
 
     def set_selected(self, selected: bool):

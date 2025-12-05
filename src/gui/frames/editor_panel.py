@@ -13,6 +13,7 @@ from core.rembg_downloader import RembgDownloader
 import threading
 from core.logger import Logger
 import traceback
+from gui.fonts import get_ui_font_family
 
 class LoadingOverlay(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
@@ -26,7 +27,7 @@ class LoadingOverlay(ctk.CTkFrame):
         self.spinner.pack(pady=10)
         self.spinner.start()
         
-        self.label = ctk.CTkLabel(self.center_frame, text=loc.get("loading", "Loading..."), font=("Arial", 16))
+        self.label = ctk.CTkLabel(self.center_frame, text=loc.get("loading", "Loading..."), font=(get_ui_font_family(), 16))
         self.label.pack(pady=5)
         
         self.lift() # Ensure on top
@@ -93,7 +94,7 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.grid_rowconfigure(1, weight=0) # Delete button area
         
         # Placeholder (Empty State)
-        self.lbl_empty = ctk.CTkLabel(self, text=loc.get("select_character"), font=("Arial", 16))
+        self.lbl_empty = ctk.CTkLabel(self, text=loc.get("select_character"), font=(get_ui_font_family(), 16))
         self.lbl_empty.grid(row=0, column=0, columnspan=2, sticky="nsew")
         
         # Preview Area
@@ -472,7 +473,7 @@ class EditorPanelFrame(ctk.CTkFrame):
             btn = ctk.CTkButton(
                 self.state_buttons_frame, 
                 text=loc.get(f"states.{key}"), 
-                font=("Arial", 11),
+                font=(get_ui_font_family(), 11),
                 width=80,
                 height=28,
                 fg_color="gray40", # Default inactive
@@ -912,7 +913,7 @@ class EditorPanelFrame(ctk.CTkFrame):
                 self.grid_widgets.append(item_frame)
                 
                 # Label
-                lbl_name = ctk.CTkLabel(item_frame, text=loc.get(f"states.{key}"), font=("Arial", 10))
+                lbl_name = ctk.CTkLabel(item_frame, text=loc.get(f"states.{key}"), font=(get_ui_font_family(), 10))
                 lbl_name.pack()
                 
                 # Image/Button
