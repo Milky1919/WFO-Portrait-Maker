@@ -1,5 +1,6 @@
 import customtkinter as ctk
 import os
+import tkinter as tk
 from core.face_manager import FaceManager
 from core.image_processor import ImageProcessor
 from core.localization import loc
@@ -37,6 +38,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             return
 
         self.face_manager = FaceManager(base_path)
+        self.face_manager.on_history_change = self.update_history_buttons
         self.image_processor = ImageProcessor()
         
         # Grid Layout
@@ -209,10 +211,21 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.bind("<Control-Shift-z>", self.redo_action) # Alternative Redo
 
     def undo_action(self, event=None):
+        # Check if focus is on a text widget (Entry, Text)
+        # If so, let the widget handle the event (standard text undo)
+        focused = self.focus_get()
+        if isinstance(focused, (ctk.CTkEntry, ctk.CTkTextbox, tk.Entry, tk.Text)):
+            return
+
         restored_data = self.face_manager.undo()
         self._handle_history_update(restored_data)
 
     def redo_action(self, event=None):
+        # Same for Redo
+        focused = self.focus_get()
+        if isinstance(focused, (ctk.CTkEntry, ctk.CTkTextbox, tk.Entry, tk.Text)):
+            return
+
         restored_data = self.face_manager.redo()
         self._handle_history_update(restored_data)
 

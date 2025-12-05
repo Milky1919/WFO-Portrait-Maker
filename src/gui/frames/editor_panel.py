@@ -265,9 +265,9 @@ class EditorPanelFrame(ctk.CTkFrame):
         # self.btn_import.pack(fill="x", padx=10, pady=10)
         
         # Sliders
-        self.slider_scale = self._create_slider(loc.get("scale"), 0.1, 2.0, 1.0)
-        self.slider_x = self._create_slider(loc.get("offset_x"), -1500, 1500, 0)
-        self.slider_y = self._create_slider(loc.get("offset_y"), -1500, 1500, 0)
+        self.slider_scale, self.entry_scale = self._create_slider(loc.get("scale"), 0.1, 2.0, 1.0)
+        self.slider_x, self.entry_x = self._create_slider(loc.get("offset_x"), -1500, 1500, 0)
+        self.slider_y, self.entry_y = self._create_slider(loc.get("offset_y"), -1500, 1500, 0)
         
         # Face Center Controls
         self.fc_frame = ctk.CTkFrame(self.controls_frame)
@@ -316,7 +316,7 @@ class EditorPanelFrame(ctk.CTkFrame):
         self.rembg_settings_frame = ctk.CTkFrame(self.rembg_frame)
         
         # Alpha Matting
-        self.switch_alpha = ctk.CTkSwitch(self.rembg_settings_frame, text=loc.get("alpha_matting", "Alpha Matting"), command=self.update_preview)
+        self.switch_alpha = ctk.CTkSwitch(self.rembg_settings_frame, text=loc.get("alpha_matting", "Alpha Matting"), command=self.toggle_alpha)
         self.switch_alpha.pack(padx=5, pady=5, anchor="w")
         
         # Thresholds
@@ -341,8 +341,8 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         ctk.CTkLabel(self.icon_frame, text=loc.get("icon_preview_scale", "Icon Preview Scale")).pack(anchor="w", padx=5)
         
-        self.slider_icon_scale_a = self._create_slider(loc.get("icon_scale_a"), 0.5, 2.0, 1.0)
-        self.slider_icon_scale_b = self._create_slider(loc.get("icon_scale_b"), 0.5, 2.0, 1.0)
+        self.slider_icon_scale_a, self.entry_icon_scale_a = self._create_slider(loc.get("icon_scale_a"), 0.5, 2.0, 1.0)
+        self.slider_icon_scale_b, self.entry_icon_scale_b = self._create_slider(loc.get("icon_scale_b"), 0.5, 2.0, 1.0)
         
         # Icon Overlay (Bottom-Right of Preview)
         self.icon_overlay_frame = ctk.CTkFrame(self.preview_frame, fg_color="transparent")
@@ -397,7 +397,8 @@ class EditorPanelFrame(ctk.CTkFrame):
                 entry.insert(0, f"{val:.2f}")
             
             # Fast Update (Immediate, Low Quality)
-            self.update_preview(fast_mode=True)
+            if not getattr(self, 'ignore_slider_event', False):
+                self.update_preview(fast_mode=True)
             
         def on_release(event):
             # Full Update (Async, High Quality)
@@ -435,7 +436,7 @@ class EditorPanelFrame(ctk.CTkFrame):
         # Let's attach it to the slider object.
         slider.entry_widget = entry
         
-        return slider
+        return slider, entry
 
 
 
@@ -506,75 +507,82 @@ class EditorPanelFrame(ctk.CTkFrame):
         states = self.current_face.get('states', {})
         state_data = states.get(state_key, {})
         
-        # 1. Update Individual Adjust Mode Switch
-        is_individual = state_data.get('is_individual', False)
-        if is_individual:
-            self.chk_individual_mode.select()
-            self.lbl_individual_indicator.place(x=10, y=10)
-            self.lbl_individual_indicator.lift()
-        else:
-            self.chk_individual_mode.deselect()
-            self.lbl_individual_indicator.place_forget()
+        # Suppress slider events to prevent multiple preview updates
+        self.ignore_slider_event = True
+        try:
+            # 1. Update Individual Adjust Mode Switch
+            # 1. Update Individual Adjust Mode Switch
+            is_individual = state_data.get('is_individual', False)
+            if is_individual:
+                self.chk_individual_mode.select()
+                self.lbl_individual_indicator.place(x=10, y=10)
+                self.lbl_individual_indicator.lift()
+            else:
+                self.chk_individual_mode.deselect()
+                self.lbl_individual_indicator.place_forget()
+                
+            # 2. Load Settings (Sliders)
+            self.slider_scale.set(state_data.get('scale', 1.0))
+            self.slider_x.set(state_data.get('offset_x', 0))
+            self.slider_y.set(state_data.get('offset_y', 0))
             
-        # 2. Load Settings (Sliders)
-        self.slider_scale.set(state_data.get('scale', 1.0))
-        self.slider_x.set(state_data.get('offset_x', 0))
-        self.slider_y.set(state_data.get('offset_y', 0))
-        
-        # Icon Scales
-        self.slider_icon_scale_a.set(state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0)))
-        self.slider_icon_scale_b.set(state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0)))
-        
-        # RemBG Settings
-        if state_data.get('use_rembg', False):
-            self.switch_rembg.select()
-            self.rembg_settings_frame.pack(fill="x", padx=5, pady=5)
-        else:
-            self.switch_rembg.deselect()
-            self.rembg_settings_frame.pack_forget()
+            # Icon Scales
+            self.slider_icon_scale_a.set(state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0)))
+            self.slider_icon_scale_b.set(state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0)))
             
-        self.switch_alpha.deselect()
-        if state_data.get('alpha_matting', False):
-            self.switch_alpha.select()
+            # RemBG Settings
+            if state_data.get('use_rembg', False):
+                self.switch_rembg.select()
+                self.rembg_settings_frame.pack(fill="x", padx=5, pady=5)
+            else:
+                self.switch_rembg.deselect()
+                self.rembg_settings_frame.pack_forget()
+                
+            self.switch_alpha.deselect()
+            if state_data.get('alpha_matting', False):
+                self.switch_alpha.select()
+                
+            # Load Presets
+            fg = state_data.get('alpha_matting_foreground_threshold', 240)
+            bg = state_data.get('alpha_matting_background_threshold', 10)
+            erode = state_data.get('alpha_matting_erode_size', 10)
             
-        # Load Presets
-        fg = state_data.get('alpha_matting_foreground_threshold', 240)
-        bg = state_data.get('alpha_matting_background_threshold', 10)
-        erode = state_data.get('alpha_matting_erode_size', 10)
-        
-        # Determine closest preset
-        # Level 1: 240, 10, 0
-        # Level 2: 240, 10, 5
-        # Level 3: 240, 10, 10
-        # Level 4: 240, 20, 10
-        # Level 5: 240, 40, 15
-        
-        # Simple heuristic: Check erode and bg
-        preset = "3"
-        if erode <= 2: preset = "1"
-        elif erode <= 7: preset = "2"
-        elif bg <= 15: preset = "3"
-        elif bg <= 30: preset = "4"
-        else: preset = "5"
+            # Determine closest preset
+            # Level 1: 240, 10, 0
+            # Level 2: 240, 10, 5
+            # Level 3: 240, 10, 10
+            # Level 4: 240, 20, 10
+            # Level 5: 240, 40, 15
             
-        self.preset_var.set(preset)
-        
-        # Load Face Center
-        face_center = state_data.get('face_center')
-        if not face_center:
-            # Fallback to defaults/global
-            face_center = self.current_face.get('defaults', {}).get('face_center')
+            # Simple heuristic: Check erode and bg
+            preset = "3"
+            if erode <= 2: preset = "1"
+            elif erode <= 7: preset = "2"
+            elif bg <= 15: preset = "3"
+            elif bg <= 30: preset = "4"
+            else: preset = "5"
+                
+            self.preset_var.set(preset)
+            
+            # Load Face Center
+            face_center = state_data.get('face_center')
             if not face_center:
-                face_center = self.current_face.get('face_center')
-        
-        if face_center:
-            self.spin_fc_x.delete(0, "end")
-            self.spin_fc_x.insert(0, str(face_center.get('x', 0)))
-            self.spin_fc_y.delete(0, "end")
-            self.spin_fc_y.insert(0, str(face_center.get('y', 0)))
-        else:
-            self.spin_fc_x.delete(0, "end")
-            self.spin_fc_y.delete(0, "end")
+                # Fallback to defaults/global
+                face_center = self.current_face.get('defaults', {}).get('face_center')
+                if not face_center:
+                    face_center = self.current_face.get('face_center')
+            
+            if face_center:
+                self.spin_fc_x.delete(0, "end")
+                self.spin_fc_x.insert(0, str(face_center.get('x', 0)))
+                self.spin_fc_y.delete(0, "end")
+                self.spin_fc_y.insert(0, str(face_center.get('y', 0)))
+            else:
+                self.spin_fc_x.delete(0, "end")
+                self.spin_fc_y.delete(0, "end")
+            
+        finally:
+            self.ignore_slider_event = False
             
         # Update Button Highlights
         self._update_state_buttons()
@@ -665,6 +673,7 @@ class EditorPanelFrame(ctk.CTkFrame):
             messagebox.showinfo("Batch Import", f"Imported {count} files.")
 
     def _import_file_to_state(self, file_path, state_key, save=True):
+        self.face_manager.push_update_state(self.current_face) # Undo snapshot
         uuid = self.face_manager.import_source_image(self.current_face, file_path)
         if uuid:
             if 'states' not in self.current_face:
@@ -776,6 +785,21 @@ class EditorPanelFrame(ctk.CTkFrame):
             # Sync Sliders to Data
             self._commit_ui_to_data()
             
+            # Check Cache for Instant Update (e.g. Undo/Redo)
+            if not fast_mode and self.current_face:
+                try:
+                    states = self.current_face.get('states', {})
+                    state_data = states.get(self.current_state_key)
+                    if state_data:
+                        source_uuid = state_data.get('source_uuid')
+                        source_path = self.face_manager.get_source_path(self.current_face, source_uuid)
+                        if source_path:
+                            # Check if we have a cached render
+                            if self.image_processor.get_cached_render(source_path, state_data):
+                                fast_mode = True
+                except:
+                    pass
+
             # If fast_mode, run synchronously
             if fast_mode:
                 result = self._generate_preview_image_internal(fast_mode=True)
@@ -1048,6 +1072,11 @@ class EditorPanelFrame(ctk.CTkFrame):
             self.rembg_settings_frame.pack_forget()
         self.update_preview()
         
+    def toggle_alpha(self):
+        if self.current_face:
+            self.face_manager.push_update_state(self.current_face)
+        self.update_preview()
+
     def set_view_mode(self, mode):
         self.view_mode = mode
         if mode == "Single":
@@ -1163,12 +1192,70 @@ class EditorPanelFrame(ctk.CTkFrame):
             self.update_preview()
 
     def load_character(self, face_data):
+        # Check if we are reloading the same character (e.g. Undo/Redo)
+        if self.current_face and face_data and self.current_face.get('uuid') == face_data.get('uuid'):
+            # Smooth reload (Update values only)
+            self.current_face = face_data
+            self._reload_current_character_values(face_data)
+            return
+
         # Remove loading overlay to prevent flickering on fast loads
         # self.loading_overlay.show()
         
         # Use after(10) to allow UI to update
         self.after(10, lambda: self._load_character_internal(face_data))
         
+    def _reload_current_character_values(self, face_data):
+        """Updates UI values from face_data without clearing the editor (Smooth Reload)."""
+        try:
+            # Update Name
+            if self.entry_name.get() != face_data.get('display_name', ''):
+                self.entry_name.delete(0, "end")
+                self.entry_name.insert(0, face_data.get('display_name', ''))
+            
+            # Update Face Center
+            fc = face_data.get('face_center')
+            if fc:
+                if self.spin_fc_x.get() != str(fc.get('x', 0)):
+                    self.spin_fc_x.delete(0, "end")
+                    self.spin_fc_x.insert(0, str(fc.get('x', 0)))
+                if self.spin_fc_y.get() != str(fc.get('y', 0)):
+                    self.spin_fc_y.delete(0, "end")
+                    self.spin_fc_y.insert(0, str(fc.get('y', 0)))
+            else:
+                self.spin_fc_x.delete(0, "end")
+                self.spin_fc_y.delete(0, "end")
+
+            # Update Preview Settings (Zoom/Pan)
+            # We might NOT want to reset Zoom/Pan on Undo if it wasn't part of the undo?
+            # But undo restores the ENTIRE state, including preview settings if they were saved.
+            # Actually, preview settings are saved in _save_json.
+            # So if we undo, we restore previous zoom/pan.
+            # This is correct behavior.
+            preview_settings = face_data.get('preview_settings', {})
+            self.view_zoom = preview_settings.get('view_zoom', 1.0)
+            self.view_pan_x = preview_settings.get('view_pan_x', 0)
+            self.view_pan_y = preview_settings.get('view_pan_y', 0)
+            
+            # Update Slider (if single view)
+            if self.view_mode == "Single":
+                self.ignore_slider_event = True
+                self.slider_zoom.set(self.view_zoom)
+                self.ignore_slider_event = False
+            
+            # Refresh State Buttons (in case status changed)
+            self._update_state_buttons()
+            
+            # Refresh Current State UI (Sliders, etc.)
+            # We need to force a refresh of the current state tab
+            self.change_state(self.current_state_key, save_before_switch=False)
+            
+            # Update Preview
+            self.update_preview()
+            
+        except Exception as e:
+            Logger.error(f"Error in smooth reload: {e}")
+
     def _load_character_internal(self, face_data):
         self.is_loading = True
         try:
@@ -1299,6 +1386,12 @@ class EditorPanelFrame(ctk.CTkFrame):
             
             self.slider_x.set(current_x + dx * scale_factor)
             self.slider_y.set(current_y + dy * scale_factor)
+            
+            # Update Entries Manually
+            self.entry_x.delete(0, "end")
+            self.entry_x.insert(0, str(int(self.slider_x.get())))
+            self.entry_y.delete(0, "end")
+            self.entry_y.insert(0, str(int(self.slider_y.get())))
             
             # Reset start to avoid continuous acceleration
             self.drag_start_x = event.x
@@ -1745,6 +1838,8 @@ class EditorPanelFrame(ctk.CTkFrame):
 
         if not self.current_face: return
 
+        self.face_manager.push_update_state(self.current_face) # Undo snapshot
+
         # Check Individual Mode
         is_individual = bool(self.chk_individual_mode.get())
         
@@ -1856,7 +1951,7 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         # Preprocess (Thread-safe if image_processor is)
         if self.cache_key != current_cache_key:
-            Logger.info(f"Cache Key Mismatch! Old: {self.cache_key}, New: {current_cache_key}")
+            # Logger.info(f"Cache Key Mismatch! Old: {self.cache_key}, New: {current_cache_key}")
             self.cached_processed_image = self.image_processor.preprocess_image(source_path, state_data)
             self.cache_key = current_cache_key
             

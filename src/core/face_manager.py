@@ -4,6 +4,7 @@ import shutil
 import uuid
 import glob
 import datetime
+import threading
 from typing import List, Dict, Optional
 from core.logger import Logger
 
@@ -12,6 +13,8 @@ class FaceManager:
         self.base_path = base_path
         self.faces: List[Dict] = []
         self.undo_stack = [] # List of (action_type, data)
+        self.redo_stack = [] # List of (action_type, data)
+        self.on_history_change = None # Callback function
         self.trash_path = os.path.join(base_path, "_trash")
         if not os.path.exists(self.trash_path):
             try:
@@ -204,6 +207,16 @@ class FaceManager:
             'face_data': copy.deepcopy(face_data),
             'path': face_data.get('_path')
         })
+        self.redo_stack.clear() # Clear redo stack on new action
+        if self.on_history_change: self.on_history_change()
+
+    @property
+    def can_undo(self) -> bool:
+        return len(self.undo_stack) > 0
+
+    @property
+    def can_redo(self) -> bool:
+        return len(self.redo_stack) > 0
 
     def undo(self) -> Optional[Dict]:
         """Undoes the last action. Returns the restored face data if applicable."""
@@ -218,13 +231,31 @@ class FaceManager:
             # Restore previous state
             prev_data = action.get('face_data')
             path = action.get('path')
+            
+            # Push CURRENT state to Redo Stack before restoring
+            # We need to find the current state of this face in memory
+            current_face = None
+            for face in self.faces:
+                if face.get('_path') == path:
+                    current_face = face
+                    break
+            
+            if current_face:
+                import copy
+                self.redo_stack.append({
+                    'type': 'update',
+                    'face_data': copy.deepcopy(current_face),
+                    'path': path
+                })
+
             if path and os.path.exists(path):
-                self.save_project_data(path, prev_data)
+                # Async Save
+                threading.Thread(target=self.save_project_data, args=(path, prev_data), daemon=True).start()
                 # Update in-memory reference
-                for face in self.faces:
-                    if face.get('_path') == path:
-                        face.update(prev_data)
-                        return face
+                if current_face:
+                    current_face.update(prev_data)
+                    if self.on_history_change: self.on_history_change()
+                    return current_face
                         
         elif action_type == 'delete':
             # Restore from trash
@@ -239,10 +270,75 @@ class FaceManager:
                     # Sort faces?
                     self.faces.sort(key=lambda x: x.get('_dirname', ''))
                     Logger.info(f"Restored character: {face_data.get('display_name')}")
-                    return face_data
+                    
+                    # Push to Redo (Delete again)
+                    self.redo_stack.append({
+                        'type': 'delete',
+                        'face_data': face_data,
+                        'trash_path': trash_path, # Reuse same trash path? No, it's gone.
+                        # Actually, if we redo a delete, we need to move it back to trash.
+                        # But the old trash folder is empty/gone now because we moved it back.
+                        # So we need to generate a new trash path or just use logic.
+                        'original_path': original_path
+                    })
+                    
+                    return face_data # Return dict to refresh list
                 except Exception as e:
                     Logger.error(f"Error restoring face: {e}")
-                    
+        
+        if self.on_history_change: self.on_history_change()
+        return None
+
+    def redo(self) -> Optional[Dict]:
+        """Redoes the last undone action."""
+        if not self.redo_stack:
+            Logger.info("Nothing to redo.")
+            return None
+            
+        action = self.redo_stack.pop()
+        action_type = action.get('type')
+        
+        if action_type == 'update':
+            # Restore "Future" state
+            next_data = action.get('face_data')
+            path = action.get('path')
+            
+            # Push CURRENT (Old) state to Undo Stack
+            current_face = None
+            for face in self.faces:
+                if face.get('_path') == path:
+                    current_face = face
+                    break
+            
+            if current_face:
+                import copy
+                self.undo_stack.append({
+                    'type': 'update',
+                    'face_data': copy.deepcopy(current_face),
+                    'path': path
+                })
+            
+            if path and os.path.exists(path):
+                # Async Save
+                threading.Thread(target=self.save_project_data, args=(path, next_data), daemon=True).start()
+                if current_face:
+                    current_face.update(next_data)
+                    if self.on_history_change: self.on_history_change()
+                    return current_face
+
+        elif action_type == 'delete':
+            # Redo Delete
+            face_data = action.get('face_data')
+            # Call delete_face but don't push to undo stack inside it?
+            # Or manually do it.
+            # delete_face pushes to undo stack.
+            # So if we call delete_face, it will push to undo stack, which is what we want!
+            # But we popped from redo stack.
+            # So:
+            if self.delete_face(face_data):
+                if self.on_history_change: self.on_history_change()
+                return True # Bool for list refresh
+
         return None
 
     def copy_face_data(self, source_face: Dict, target_face: Dict) -> bool:

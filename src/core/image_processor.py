@@ -13,6 +13,11 @@ class ImageProcessor:
         self._rembg_session = None
         self._session_lock = threading.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        
+        # Render Cache (LRU)
+        self._render_cache = {} # Key -> Image
+        self._render_cache_capacity = 50
+        self._render_cache_lock = threading.Lock()
 
     def _get_session(self):
         """Lazy loads the rembg session."""
@@ -145,6 +150,15 @@ class ImageProcessor:
             img = self.preprocess_image(source_path, params)
             if not img: return None
 
+        # Check Render Cache
+        cache_key = self._generate_render_cache_key(source_path, params, target_size, face_center)
+        with self._render_cache_lock:
+            if cache_key in self._render_cache:
+                # Hit! Move to end
+                cached_img = self._render_cache.pop(cache_key)
+                self._render_cache[cache_key] = cached_img
+                return cached_img
+
         # 2. Scaling
         scale = params.get('scale', 1.0)
         if scale != 1.0:
@@ -167,7 +181,56 @@ class ImageProcessor:
         
 
         
+        canvas.alpha_composite(img, (int(paste_x), int(paste_y)))
+        
+        # Save to Render Cache
+        with self._render_cache_lock:
+            if len(self._render_cache) >= self._render_cache_capacity:
+                # Remove oldest (first item)
+                first_key = next(iter(self._render_cache))
+                del self._render_cache[first_key]
+            self._render_cache[cache_key] = canvas
+        
         return canvas
+
+    def get_cached_render(self, source_path: str, params: Dict, target_size: Tuple[int, int] = (1920, 1080), face_center: Optional[Tuple[int, int]] = None) -> Optional[Image.Image]:
+        """Attempts to retrieve a fully rendered image from cache."""
+        cache_key = self._generate_render_cache_key(source_path, params, target_size, face_center)
+        with self._render_cache_lock:
+            if cache_key in self._render_cache:
+                # Move to end (Recently Used)
+                img = self._render_cache.pop(cache_key)
+                self._render_cache[cache_key] = img
+                return img
+        return None
+
+    def _generate_render_cache_key(self, source_path, params, target_size, face_center):
+        """Generates a unique key for the render cache."""
+        # We need to include ALL parameters that affect the final output
+        # source_path, scale, offset, rembg settings, target_size, face_center (if used for rendering? No, face_center is for icons usually, but passed to process_image)
+        # Actually process_image doesn't use face_center for the main canvas, only for icons? 
+        # Wait, process_image signature has face_center. Let's check if it uses it.
+        # It seems it doesn't use face_center for the canvas composition in the current code.
+        # But let's include it if it's passed, just in case.
+        
+        key_items = [
+            source_path,
+            target_size,
+            params.get('scale'),
+            params.get('offset_x'),
+            params.get('offset_y'),
+            params.get('use_rembg'),
+            params.get('alpha_matting'),
+            params.get('alpha_matting_foreground_threshold'),
+            params.get('alpha_matting_background_threshold'),
+            params.get('alpha_matting_erode_size')
+        ]
+        
+        # Hash it
+        hasher = hashlib.md5()
+        for item in key_items:
+            hasher.update(str(item).encode('utf-8'))
+        return hasher.hexdigest()
 
     def create_face_icon(self, image: Image.Image, size: Tuple[int, int], face_center: Optional[Dict] = None, icon_scale: float = 1.0) -> Image.Image:
         """Creates a face icon (face_a, face_b) from the processed image."""
