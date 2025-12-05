@@ -3,6 +3,8 @@ from PIL import Image, ImageOps
 import io
 from typing import Optional, Tuple, Dict
 import concurrent.futures
+import hashlib
+import os
 
 from core.logger import Logger
 
@@ -58,6 +60,50 @@ class ImageProcessor:
         """
         if not source_path: return None
         
+        # Check for Cache if RemBG is enabled
+        use_rembg = params.get('use_rembg', False)
+        
+        if use_rembg:
+            # Construct Cache Key
+            try:
+                # Use file modification time to invalidate cache if source changes
+                mtime = os.path.getmtime(source_path)
+            except:
+                mtime = 0
+                
+            cache_key_data = (
+                source_path,
+                mtime,
+                params.get('alpha_matting', False),
+                params.get('alpha_matting_foreground_threshold', 240),
+                params.get('alpha_matting_background_threshold', 10),
+                params.get('alpha_matting_erode_size', 10)
+            )
+            
+            # Create Hash
+            hasher = hashlib.md5()
+            for item in cache_key_data:
+                hasher.update(str(item).encode('utf-8'))
+            cache_hash = hasher.hexdigest()
+            
+            # Cache Directory
+            source_dir = os.path.dirname(source_path)
+            cache_dir = os.path.join(source_dir, "_cache")
+            
+            # Cache Filename
+            source_name = os.path.splitext(os.path.basename(source_path))[0]
+            cache_filename = f"{source_name}_rembg_{cache_hash}.png"
+            cache_path = os.path.join(cache_dir, cache_filename)
+            
+            # Check if exists
+            if os.path.exists(cache_path):
+                try:
+                    # Logger.info(f"Loading from cache: {cache_path}")
+                    return Image.open(cache_path).convert("RGBA")
+                except Exception as e:
+                    Logger.error(f"Error loading cache {cache_path}: {e}")
+        
+        # Normal Loading
         try:
             img = Image.open(source_path).convert("RGBA")
         except Exception as e:
@@ -65,8 +111,17 @@ class ImageProcessor:
             return None
             
         # Background Removal
-        if params.get('use_rembg', False):
+        if use_rembg:
             img = self.remove_background(img, params)
+            
+            # Save to Cache
+            try:
+                if not os.path.exists(cache_dir):
+                    os.makedirs(cache_dir)
+                img.save(cache_path)
+                Logger.info(f"Saved to cache: {cache_path}")
+            except Exception as e:
+                Logger.error(f"Error saving cache {cache_path}: {e}")
             
         return img
 

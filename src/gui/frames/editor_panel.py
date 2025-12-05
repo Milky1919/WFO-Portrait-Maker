@@ -765,6 +765,7 @@ class EditorPanelFrame(ctk.CTkFrame):
             self.update_preview()
 
     def update_preview(self, *args, fast_mode=False):
+        # Logger.info(f"update_preview called. Fast: {fast_mode}. Stack: {''.join(traceback.format_stack()[-3:])}")
         # Main Thread Synchronous Update (Fast Mode or Sync Full)
         try:
             if not self.current_face: return
@@ -775,7 +776,15 @@ class EditorPanelFrame(ctk.CTkFrame):
             # If fast_mode, run synchronously
             if fast_mode:
                 result = self._generate_preview_image_internal(fast_mode=True)
-                self._on_full_render_complete(result) # Reuse update logic (it just updates UI)
+                # Update UI directly without touching overlay
+                display_img, processed_img, _, _ = result
+                if display_img:
+                    self.lbl_preview.configure(image=None)
+                    photo_img = ImageTk.PhotoImage(display_img)
+                    self.current_image = photo_img
+                    self.current_pil_image = processed_img
+                    self.lbl_preview.configure(image=photo_img, text="")
+                    self._update_preview_position()
             else:
                 # If called without fast_mode (e.g. load), run async
                 self._perform_full_render()
@@ -784,204 +793,40 @@ class EditorPanelFrame(ctk.CTkFrame):
             Logger.error(f"Critical error in update_preview: {e}\n{traceback.format_exc()}")
 
     def _deprecated_update_preview(self, *args, fast_mode=False):
-        try:
-            if not self.current_face:
-                return
-                
-            # Debounce
-            # ... (existing debounce logic if any, or simple pass)
-            
-            # Get Current State Data
-            states = self.current_face.get('states', {})
-            state_data = states.get(self.current_state_key)
-            if not state_data: return
-            
-            # --- Sync Sliders to State Data ---
-            # (Only if not dragging? Or always? Always sync from UI to Data)
-            # But if we are just loading, we shouldn't overwrite.
-            # The sliders are the source of truth when editing.
-            
-            # Update State Data from Sliders (and Sync if needed)
-            self._commit_ui_to_data()
-            
-            # Re-fetch state_data to ensure we have the latest (though it should be same ref)
-            state_data = states.get(self.current_state_key)
-            
-            # Get Source Image
-            source_uuid = state_data.get('source_uuid')
-            if not source_uuid:
-                # Use empty string instead of None to avoid TclError if previous image is missing
-                self.lbl_preview.configure(image="", text="No Image")
-                self.lbl_icon_a.configure(image="")
-                self.lbl_icon_b.configure(image="")
-                return
-                
-            source_path = self.face_manager.get_source_path(self.current_face, source_uuid)
-            if not source_path or not os.path.exists(source_path):
-                self.lbl_preview.configure(image="", text="Image Not Found")
-                return
+        pass
 
-            # Resampling Filter
-            resample_filter = Image.Resampling.NEAREST if fast_mode else Image.Resampling.LANCZOS
 
-            # Cache Key Construction
-            # Keys that affect the base image (Load + Rembg)
-            current_cache_key = (
-                source_uuid,
-                state_data.get('use_rembg'),
-                state_data.get('alpha_matting'),
-                state_data.get('alpha_matting_foreground_threshold'),
-                state_data.get('alpha_matting_background_threshold'),
-                state_data.get('alpha_matting_erode_size')
-            )
+
+
+                
+
+
+                
+
+
+
             
-            # Check Cache
-            if self.cache_key != current_cache_key:
-                # Cache Miss - Re-process base image
-                self.cached_processed_image = self.image_processor.preprocess_image(source_path, state_data)
-                self.cache_key = current_cache_key
-                
-            # Get Face Center for this state
-            face_center = state_data.get('face_center')
-            if not face_center:
-                # Fallback to defaults if missing (shouldn't happen with migration)
-                face_center = self.current_face.get('defaults', {}).get('face_center')
 
-            # --- Clean Image Cache Check ---
-            # Keys that affect the "clean" character image (scaling, offset) but NOT Game UI
-            current_clean_key = (
-                self.cache_key, # Base image state
-                state_data.get('scale'),
-                state_data.get('offset_x'),
-                state_data.get('offset_y'),
-                face_center.get('x') if face_center else None,
-                face_center.get('y') if face_center else None
-            )
-            
-            clean_img = None
-            if self.clean_cache_key == current_clean_key and self.cached_clean_image:
-                clean_img = self.cached_clean_image
-            else:
-                # Process Image (Use cached base)
-                clean_img = self.image_processor.process_image(
-                    source_path, # Ignored if preprocessed_image is passed
-                    state_data, 
-                    target_size=(1920, 1080),
-                    preprocessed_image=self.cached_processed_image,
-                    face_center=face_center
-                )
                 
-                # Only cache if NOT fast mode
-                if not fast_mode:
-                    self.cached_clean_image = clean_img
-                    self.clean_cache_key = current_clean_key
-                
-            if clean_img:
-                # --- Icon Preview (Always generate using clean image) ---
-                # Skip icon generation in fast mode
-                if not fast_mode:
-                    icon_scale_a = state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0))
-                    icon_scale_b = state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0))
-                    
-                    # Convert list/tuple face_center to dict for image_processor (legacy compat)
-                    fc_dict = None
-                    if face_center:
-                        fc_dict = {'x': face_center.get('x'), 'y': face_center.get('y')}
-                        
-                    icon_a = self.image_processor.create_face_icon(clean_img, (96, 96), fc_dict, icon_scale_a)
-                    icon_b = self.image_processor.create_face_icon(clean_img, (270, 96), fc_dict, icon_scale_b)
-                    
-                    # Use ImageTk.PhotoImage for robustness
-                    photo_icon_a = ImageTk.PhotoImage(icon_a)
-                    photo_icon_b = ImageTk.PhotoImage(icon_b)
-                    
-                    # Keep references!
-                    self.current_icon_a = photo_icon_a
-                    self.current_icon_b = photo_icon_b
-                    
-                    self.lbl_icon_a.configure(image=photo_icon_a, text="")
-                    self.lbl_icon_b.configure(image=photo_icon_b, text="")
-                    self.lbl_icon_a.update_idletasks() # Force update
 
-                # --- Game UI Background (Composite for Main Preview ONLY) ---
-                processed_img = clean_img
                 
-                if self.switch_game_ui.get():
-                    try:
-                        assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "assets")
-                        bg01_path = os.path.join(assets_dir, "preview_bg_01.png")
-                        bg02_path = os.path.join(assets_dir, "preview_bg_02.png")
-                        
-                        # 1. Base: BG 01 (Background)
-                        if os.path.exists(bg01_path):
-                            base_img = Image.open(bg01_path).convert("RGBA")
-                            if base_img.size != (1920, 1080):
-                                base_img = base_img.resize((1920, 1080), resample_filter)
-                        else:
-                            # Fallback if missing: Transparent canvas
-                            base_img = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
-    
-                        # 2. Middle: Character
-                        # clean_img is the character (RGBA)
-                        base_img.alpha_composite(clean_img)
-                        
-                        # 3. Top: BG 02 (Foreground)
-                        if os.path.exists(bg02_path):
-                            fg_img = Image.open(bg02_path).convert("RGBA")
-                            if fg_img.size != (1920, 1080):
-                                fg_img = fg_img.resize((1920, 1080), resample_filter)
-                            base_img.alpha_composite(fg_img)
+
+
+
+
+
+
+
+
+
+
+
+
                             
-                        processed_img = base_img
-                        
-                    except Exception as e:
-                        print(f"Error loading game UI background: {e}")
-                        Logger.error(f"Error loading game UI background: {e}")
-    
-                # Draw Face Center Marker
-                self._draw_marker(processed_img, face_center)
-            else:
-                processed_img = None
 
-            # Resize for preview (keep aspect ratio)
-            preview_height = self.preview_frame.winfo_height()
-            if preview_height < 100: preview_height = 400 # Default if not rendered yet
-            
-            if processed_img:
-                ratio = processed_img.width / processed_img.height
-                new_h = preview_height - 50 # Padding
-                new_w = int(new_h * ratio)
-                
-                display_img = processed_img.resize((new_w, new_h), resample_filter)
-            else:
-                display_img = None
-            
-            # Apply View Zoom
-            if display_img and self.view_zoom != 1.0:
-                zw = int(new_w * self.view_zoom)
-                zh = int(new_h * self.view_zoom)
-                display_img = display_img.resize((zw, zh), Image.Resampling.NEAREST)
-                
-            # Create Image (Use ImageTk.PhotoImage for tk.Label)
-            try:
-                # Explicitly clear previous image
-                self.lbl_preview.configure(image=None)
-                
-                # Create PhotoImage
-                photo_img = ImageTk.PhotoImage(display_img)
-                
-                self.current_image = photo_img # Keep reference
-                self.current_pil_image = processed_img # Keep original for coordinate calc
-                
-                self.lbl_preview.configure(image=photo_img, text="")
-                self._update_preview_position()
-            except Exception as e:
-                print(f"Warning: Failed to update preview image: {e}")
-                Logger.error(f"Warning: Failed to update preview image: {e}")
-                self.lbl_preview.configure(image=None, text=loc.get("error_processing"))
-                
-        except Exception as e:
-            Logger.error(f"Critical error in update_preview: {e}\n{traceback.format_exc()}")
+    
+
+
 
     def _refresh_grid_view(self):
         try:
@@ -1440,12 +1285,15 @@ class EditorPanelFrame(ctk.CTkFrame):
             self.drag_start_x = event.x
             self.drag_start_y = event.y
             
-            self.update_preview()
+            self.update_preview(fast_mode=True)
 
     def on_mouse_up(self, event):
         if not self.is_dragging:
             # It was a click -> Face Center
             self.on_preview_click(event)
+        else:
+            # Drag finished -> Full Render
+            self._perform_full_render()
         self.is_dragging = False
 
     def on_mouse_wheel(self, event):
@@ -1468,9 +1316,13 @@ class EditorPanelFrame(ctk.CTkFrame):
             self.ignore_slider_event = True
             self.slider_zoom.set(new_zoom)
             self.ignore_slider_event = False
-            self.update_preview()
             
-        self.update_preview()
+        self.update_preview(fast_mode=True)
+        
+        # Debounce Full Render
+        if self.preview_timer:
+            self.after_cancel(self.preview_timer)
+        self.preview_timer = self.after(500, self._perform_full_render)
 
     def on_pan_start(self, event):
         self.is_panning = True
@@ -1860,20 +1712,45 @@ class EditorPanelFrame(ctk.CTkFrame):
         }
         fg, bg, erode = presets.get(value, (240, 10, 10))
         
-        # Update State Data Directly
-        if self.current_face:
-            states = self.current_face.get('states', {})
+        # Prepare settings dict
+        settings = {
+            'alpha_matting_foreground_threshold': fg,
+            'alpha_matting_background_threshold': bg,
+            'alpha_matting_erode_size': erode
+        }
+
+        if not self.current_face: return
+
+        # Check Individual Mode
+        is_individual = bool(self.chk_individual_mode.get())
+        
+        states = self.current_face.get('states', {})
+        
+        if not is_individual:
+            # Global Update
+            # Update Defaults
+            defaults = self.current_face.get('defaults', {})
+            defaults.update(settings)
+            self.current_face['defaults'] = defaults
+            
+            # Update ALL states (except those marked individual)
+            for key in states:
+                if states[key]:
+                    if states[key].get('is_individual', False):
+                        continue
+                    states[key].update(settings)
+        else:
+            # Local Update
             state_data = states.get(self.current_state_key)
             if state_data:
-                state_data['alpha_matting_foreground_threshold'] = fg
-                state_data['alpha_matting_background_threshold'] = bg
-                state_data['alpha_matting_erode_size'] = erode
+                state_data.update(settings)
                 
         # Trigger Preview Update (Full render if not fast mode, which is default)
         self.update_preview()
 
     def _perform_full_render(self):
         """Async full render with loading overlay"""
+        # Logger.info(f"_perform_full_render called. Stack: {''.join(traceback.format_stack()[-3:])}")
         if getattr(self, 'is_loading', False): return
         
         self.loading_overlay.show()
@@ -1955,6 +1832,7 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         # Preprocess (Thread-safe if image_processor is)
         if self.cache_key != current_cache_key:
+            Logger.info(f"Cache Key Mismatch! Old: {self.cache_key}, New: {current_cache_key}")
             self.cached_processed_image = self.image_processor.preprocess_image(source_path, state_data)
             self.cache_key = current_cache_key
             
