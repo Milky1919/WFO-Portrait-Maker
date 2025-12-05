@@ -53,21 +53,7 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
             self.drop_target_register(DND_FILES)
             self.dnd_bind('<<Drop>>', self.on_drop)
         except Exception as e:
-            print(f"D&D setup failed: {e}")
-
-    def update_card(self, face_data):
-        """Updates a single card if it exists, otherwise adds it."""
-        # Find existing card
-        for card in self.cards:
-            if card.face_data.get('_dirname') == face_data.get('_dirname'):
-                card.update_data(face_data)
-                return
-        
-        # If not found (newly created?), add it
-        card = CharacterCard(self, face_data)
-        card.pack(fill="x", pady=5, padx=5)
-        self._bind_events(card, face_data)
-        self.cards.append(card)
+            Logger.error(f"D&D setup failed: {e}")
 
     def _bind_events(self, widget, face):
         # Click (Selection)
@@ -281,6 +267,7 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
             for child in self.cards:
                 if child.face_data.get('_dirname') == face_data.get('_dirname'):
                     child.update_data(face_data)
+                    self._bind_events(child, face_data) # Rebind to fix stale references
                     return
             
             # If not found (e.g. new), refresh all
@@ -288,7 +275,8 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
 
 class CharacterCard(ctk.CTkFrame):
     def __init__(self, master, face_data):
-        super().__init__(master)
+        super().__init__(master, height=60)
+        self.pack_propagate(False) # Fix height
         self.face_data = face_data
         self.default_fg_color = self._fg_color
         
@@ -365,8 +353,11 @@ class CharacterCard(ctk.CTkFrame):
         if os.path.exists(thumb_path):
             try:
                 img = Image.open(thumb_path)
-                img.thumbnail((32, 32))
-                self.thumb_image = ctk.CTkImage(light_image=img, dark_image=img, size=(32, 32))
+                # img.thumbnail((48, 48)) # Use full quality or match init
+                # init uses copy without thumbnail, letting CTkImage scale it.
+                # Let's do the same or just ensure size matches.
+                # CTkImage size argument controls display size.
+                self.thumb_image = ctk.CTkImage(light_image=img, dark_image=img, size=(48, 48))
                 self.lbl_thumb.configure(image=self.thumb_image, text="")
             except Exception as e:
                 Logger.error(f"Error updating thumbnail: {e}")

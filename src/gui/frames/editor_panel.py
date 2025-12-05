@@ -342,13 +342,13 @@ class EditorPanelFrame(ctk.CTkFrame):
         
         ctk.CTkLabel(self.icon_frame, text=loc.get("icon_preview_scale", "Icon Preview Scale")).pack(anchor="w", padx=5)
         
-        self.slider_icon_scale_a, self.entry_icon_scale_a = self._create_slider(loc.get("icon_scale_a"), 0.5, 2.0, 1.0)
-        self.slider_icon_scale_b, self.entry_icon_scale_b = self._create_slider(loc.get("icon_scale_b"), 0.5, 2.0, 1.0)
+        self.slider_icon_scale_a, self.entry_icon_scale_a = self._create_slider(loc.get("icon_scale_a"), 0.1, 3.0, 1.0)
+        self.slider_icon_scale_b, self.entry_icon_scale_b = self._create_slider(loc.get("icon_scale_b"), 0.1, 3.0, 1.0)
         
         # Icon Overlay (Bottom-Right of Preview)
         self.icon_overlay_frame = ctk.CTkFrame(self.preview_frame, fg_color="transparent")
         self.icon_overlay_frame.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-10)
-        
+
         # Icon B (Wide) - Rightmost? Or Left of A? Usually B is wider.
         # Let's put them side-by-side.
         # Frame for Border
@@ -523,13 +523,36 @@ class EditorPanelFrame(ctk.CTkFrame):
                 self.lbl_individual_indicator.place_forget()
                 
             # 2. Load Settings (Sliders)
-            self.slider_scale.set(state_data.get('scale', 1.0))
-            self.slider_x.set(state_data.get('offset_x', 0))
-            self.slider_y.set(state_data.get('offset_y', 0))
+            scale = state_data.get('scale', 1.0)
+            self.slider_scale.set(scale)
+            if hasattr(self.slider_scale, 'entry_widget'):
+                self.slider_scale.entry_widget.delete(0, "end")
+                self.slider_scale.entry_widget.insert(0, f"{scale:.2f}")
+
+            off_x = state_data.get('offset_x', 0)
+            self.slider_x.set(off_x)
+            if hasattr(self.slider_x, 'entry_widget'):
+                self.slider_x.entry_widget.delete(0, "end")
+                self.slider_x.entry_widget.insert(0, str(int(off_x)))
+
+            off_y = state_data.get('offset_y', 0)
+            self.slider_y.set(off_y)
+            if hasattr(self.slider_y, 'entry_widget'):
+                self.slider_y.entry_widget.delete(0, "end")
+                self.slider_y.entry_widget.insert(0, str(int(off_y)))
             
             # Icon Scales
-            self.slider_icon_scale_a.set(state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0)))
-            self.slider_icon_scale_b.set(state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0)))
+            isa = state_data.get('icon_scale_a', state_data.get('icon_scale', 1.0))
+            self.slider_icon_scale_a.set(isa)
+            if hasattr(self.slider_icon_scale_a, 'entry_widget'):
+                self.slider_icon_scale_a.entry_widget.delete(0, "end")
+                self.slider_icon_scale_a.entry_widget.insert(0, f"{isa:.2f}")
+
+            isb = state_data.get('icon_scale_b', state_data.get('icon_scale', 1.0))
+            self.slider_icon_scale_b.set(isb)
+            if hasattr(self.slider_icon_scale_b, 'entry_widget'):
+                self.slider_icon_scale_b.entry_widget.delete(0, "end")
+                self.slider_icon_scale_b.entry_widget.insert(0, f"{isb:.2f}")
             
             # RemBG Settings
             if state_data.get('use_rembg', False):
@@ -967,6 +990,13 @@ class EditorPanelFrame(ctk.CTkFrame):
             # Force update of scroll region
             self.grid_view_frame.update_idletasks()
             
+            # Register D&D for the background frame too
+            try:
+                self.grid_view_frame.drop_target_register('DND_Files')
+                self.grid_view_frame.dnd_bind('<<Drop>>', self.on_drop_batch)
+            except:
+                pass
+            
         except Exception as e:
             Logger.error(f"Critical error in _refresh_grid_view: {e}\n{traceback.format_exc()}")
 
@@ -984,6 +1014,21 @@ class EditorPanelFrame(ctk.CTkFrame):
                 self._import_file_to_state(file_path, key)
                 self.change_state(key) # Switch to it after import
                 self._refresh_grid_view() # Refresh grid to show new image
+
+    def on_drop_grid_cell(self, event, state_key):
+        files = self.tk.splitlist(event.data)
+        if not files: return
+        
+        # If multiple files are dropped, treat as batch import
+        if len(files) > 1:
+            self.on_drop_batch(event)
+            return
+            
+        # Single file -> Import to specific state (Override suffix)
+        file_path = files[0]
+        if os.path.isfile(file_path):
+            self._import_file_to_state(file_path, state_key)
+            self._refresh_grid_view()
 
     def _check_rembg_model(self):
         if RembgDownloader.is_model_installed():
