@@ -152,6 +152,10 @@ class FaceManager:
 
     def save_project_data(self, face_dir: str, data: Dict) -> bool:
         """Saves project_data.json with backup."""
+        if not os.path.exists(face_dir):
+            Logger.warning(f"Save skipped: Directory not found: {face_dir}")
+            return False
+
         json_path = os.path.join(face_dir, "project_data.json")
         bak_path = os.path.join(face_dir, "project_data.json.bak")
         

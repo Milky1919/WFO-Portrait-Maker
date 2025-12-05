@@ -271,8 +271,20 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
         # Deprecated: We now initialize on edit
         pass
 
-    def refresh_card(self, face_data):
-        self.refresh()
+    def update_card(self, face_data):
+        if face_data is None:
+            # Full Refresh (Deleted)
+            self.refresh()
+        else:
+            # Optimised single update (Optimising Thumbnail Updates)
+            # Find the card for this face_data
+            for child in self.cards:
+                if child.face_data.get('_dirname') == face_data.get('_dirname'):
+                    child.update_data(face_data)
+                    return
+            
+            # If not found (e.g. new), refresh all
+            self.refresh()
 
 class CharacterCard(ctk.CTkFrame):
     def __init__(self, master, face_data):
