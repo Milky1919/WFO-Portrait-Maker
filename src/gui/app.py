@@ -263,3 +263,68 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
     def on_closing(self):
         self.save_config()
         self.destroy()
+
+    def show_dimmer(self):
+        if hasattr(self, 'dimmer') and self.dimmer:
+            return
+            
+        from core.logger import Logger
+        Logger.info("App.show_dimmer called (Transient)")
+        
+        import tkinter
+        self.dimmer = tkinter.Toplevel(self)
+        self.dimmer.withdraw() # Hide initially
+        
+        # Overrideredirect (Frameless)
+        self.dimmer.overrideredirect(True)
+        self.dimmer.configure(bg="black")
+        
+        # Add a Frame to ensure content exists
+        self.dimmer_frame = tkinter.Frame(self.dimmer, bg="black")
+        self.dimmer_frame.pack(fill="both", expand=True)
+        
+        # Initial Position
+        self._update_dimmer_position()
+        
+        self.dimmer.deiconify() # Show
+        
+        # Wait for visibility BEFORE setting transient to avoid "invisible window" bug on Windows
+        try:
+            self.dimmer.wait_visibility(self.dimmer)
+            
+            # Now apply transient and alpha
+            self.dimmer.transient(self)
+            self.dimmer.lift()
+            self.dimmer.attributes("-alpha", 0.5)
+            
+            Logger.info("Dimmer visibility confirmed. Transient set, Alpha=0.5")
+        except tkinter.TclError as e:
+            Logger.error(f"Error waiting for dimmer visibility: {e}")
+        
+        # Bind Configure to track main window
+        self.bind("<Configure>", self._update_dimmer_position, add="+")
+        
+    def hide_dimmer(self):
+        if hasattr(self, 'dimmer') and self.dimmer:
+            from core.logger import Logger
+            Logger.info("App.hide_dimmer called")
+            self.dimmer.destroy()
+            self.dimmer = None
+            self.unbind("<Configure>") 
+            
+    def _update_dimmer_position(self, event=None):
+        if hasattr(self, 'dimmer') and self.dimmer:
+            # Match client area size/pos
+            x = self.winfo_rootx()
+            y = self.winfo_rooty()
+            w = self.winfo_width()
+            h = self.winfo_height()
+            
+            if w <= 1 or h <= 1: return
+            
+            geom = f"{w}x{h}+{x}+{y}"
+            # from core.logger import Logger
+            # Logger.info(f"Updating dimmer geometry: {geom}")
+            
+            self.dimmer.geometry(geom)
+            # Do NOT lift here, otherwise it covers other topmost windows (like the dialog)

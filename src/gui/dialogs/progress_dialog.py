@@ -10,6 +10,8 @@ class ProgressDialog(ctk.CTkToplevel):
         # Center on parent
         self.transient(master)
         self.grab_set()
+        self.lift()
+        self.focus_force()
         
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
