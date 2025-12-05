@@ -167,7 +167,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         
         # Bind events
         self.character_list.set_on_select(self.editor_panel.load_character)
-        self.editor_panel.set_on_update(self.character_list.refresh_card)
+        self.editor_panel.set_on_update(self.character_list.update_card)
         
         from core.logger import Logger
         

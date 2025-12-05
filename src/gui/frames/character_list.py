@@ -55,6 +55,20 @@ class CharacterListFrame(ctk.CTkScrollableFrame):
         except Exception as e:
             print(f"D&D setup failed: {e}")
 
+    def update_card(self, face_data):
+        """Updates a single card if it exists, otherwise adds it."""
+        # Find existing card
+        for card in self.cards:
+            if card.face_data.get('_dirname') == face_data.get('_dirname'):
+                card.update_data(face_data)
+                return
+        
+        # If not found (newly created?), add it
+        card = CharacterCard(self, face_data)
+        card.pack(fill="x", pady=5, padx=5)
+        self._bind_events(card, face_data)
+        self.cards.append(card)
+
     def _bind_events(self, widget, face):
         # Click (Selection)
         widget.bind("<Button-1>", lambda e, f=face: self.on_card_click(f, e))
@@ -318,6 +332,48 @@ class CharacterCard(ctk.CTkFrame):
         dirname = face_data.get('_dirname', '')
         self.lbl_id = ctk.CTkLabel(self, text=dirname, font=(get_ui_font_family(), 10))
         self.lbl_id.pack(side="right", padx=5)
+
+    def update_data(self, face_data):
+        """Refreshes the card with new data."""
+        self.face_data = face_data
+        
+        # Refresh Thumbnail
+        face_dir = face_data.get('_path')
+        thumb_path = None
+        try:
+            if os.path.exists(face_dir):
+                for f in os.listdir(face_dir):
+                    if f.lower() == "face_a.png":
+                        thumb_path = os.path.join(face_dir, f)
+                        break
+        except:
+            pass
+        if not thumb_path: thumb_path = os.path.join(face_dir, "face_a.png")
+
+        if os.path.exists(thumb_path):
+            try:
+                img = Image.open(thumb_path)
+                img.thumbnail((32, 32))
+                self.thumb_image = ctk.CTkImage(light_image=img, dark_image=img, size=(32, 32))
+                self.lbl_thumb.configure(image=self.thumb_image, text="")
+            except Exception as e:
+                Logger.error(f"Error updating thumbnail: {e}")
+        else:
+            self.lbl_thumb.configure(image=None, text=loc.get("no_img", "No Img"))
+
+        # Refresh Name
+        display_name = face_data.get('display_name', 'Unknown')
+        status = face_data.get('_status', 'managed')
+        if status == 'empty':
+            display_name = f"{display_name} {loc.get('empty', '(Empty)')}"
+        elif status == 'unmanaged':
+            display_name = f"{display_name} {loc.get('unmanaged', '(Unmanaged)')}"
+            
+        self.lbl_name.configure(text=display_name, font=(get_ui_font_family(), 12, "bold" if status == 'managed' else "normal"))
+        if status == 'empty':
+            self.lbl_name.configure(text_color="gray")
+        else:
+            self.lbl_name.configure(text_color=("black", "white"))
 
     def set_selected(self, selected: bool):
         if selected:

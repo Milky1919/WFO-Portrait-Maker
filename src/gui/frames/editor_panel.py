@@ -1713,6 +1713,8 @@ class EditorPanelFrame(ctk.CTkFrame):
     def _on_save_complete(self):
         self.loading_overlay.hide()
         self._show_save_success()
+        if self.on_update_callback:
+            self.on_update_callback(self.current_face)
 
     def _show_save_success(self):
         original_text = self.btn_save.cget("text")
@@ -2002,7 +2004,7 @@ class EditorPanelFrame(ctk.CTkFrame):
             icon_b = self.image_processor.create_face_icon(clean_img, (270, 96), fc_dict, icon_scale_b)
 
             # Game UI Background
-            processed_img = clean_img
+            processed_img = clean_img.copy()
             
             # Safe access to switch_game_ui
             show_ui = False
