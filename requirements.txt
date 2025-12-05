@@ -4,3 +4,4 @@ rembg>=2.0.50
 onnxruntime
 tkinterdnd2
 requests
+pyinstaller
