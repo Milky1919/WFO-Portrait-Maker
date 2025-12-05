@@ -16,3 +16,16 @@ debug_log.txt
 # Environment
 venv/
 .env
+user_data/
+
+# IDE
+.vscode/
+.idea/
+
+# Build
+build/
+dist/
+*.spec
+
+# Logs
+*.log

@@ -3,3 +3,4 @@ Pillow>=10.0.0
 rembg>=2.0.50
 onnxruntime
 tkinterdnd2
+requests
